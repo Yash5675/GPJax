@@ -6,14 +6,14 @@ on:
       - main
 
 jobs:
-  test:
+  unit-tests:
     name: Run Tests
     runs-on: ubuntu-latest
     strategy:
       matrix:
         # Select the Python versions to test against
         os: ["ubuntu-latest", "macos-latest"]
-        python-version: ["3.8", "3.9", "3.10", "3.11"]
+        python-version: ["3.10", "3.11"]
       fail-fast: true
     steps:
       - name: Check out the code

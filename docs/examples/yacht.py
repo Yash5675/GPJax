@@ -1,3 +1,19 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: -all
+#     custom_cell_magics: kql
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.11.2
+#   kernelspec:
+#     display_name: gpjax
+#     language: python
+#     name: python3
+# ---
+
 # %% [markdown]
 # # UCI Data Benchmarking
 #
@@ -9,7 +25,7 @@
 
 # %%
 # Enable Float64 for more stable matrix inversions.
-from jax.config import config
+from jax import config
 
 config.update("jax_enable_x64", True)
 
@@ -19,7 +35,6 @@ from jaxtyping import install_import_hook
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-import optax as ox
 import pandas as pd
 from sklearn.metrics import (
     mean_squared_error,
@@ -32,8 +47,10 @@ with install_import_hook("gpjax", "beartype.beartype"):
     import gpjax as gpx
 
 # Enable Float64 for more stable matrix inversions.
-key = jr.PRNGKey(123)
-plt.style.use("./gpjax.mplstyle")
+key = jr.key(123)
+plt.style.use(
+    "https://raw.githubusercontent.com/JaxGaussianProcesses/GPJax/main/docs/examples/gpjax.mplstyle"
+)
 cols = mpl.rcParams["axes.prop_cycle"].by_key()["color"]
 
 # %% [markdown]
@@ -150,11 +167,15 @@ scaled_Xte = x_scaler.transform(Xte)
 
 # %%
 n_train, n_covariates = scaled_Xtr.shape
-kernel = gpx.RBF(active_dims=list(range(n_covariates)))
+kernel = gpx.kernels.RBF(
+    active_dims=list(range(n_covariates)),
+    variance=np.var(scaled_ytr),
+    lengthscale=0.1 * np.ones((n_covariates,)),
+)
 meanf = gpx.mean_functions.Zero()
-prior = gpx.Prior(mean_function=meanf, kernel=kernel)
+prior = gpx.gps.Prior(mean_function=meanf, kernel=kernel)
 
-likelihood = gpx.Gaussian(num_datapoints=n_train)
+likelihood = gpx.likelihoods.Gaussian(num_datapoints=n_train)
 
 posterior = prior * likelihood
 
@@ -162,21 +183,17 @@ posterior = prior * likelihood
 # ### Model Optimisation
 #
 # With a model now defined, we can proceed to optimise the hyperparameters of our
-# model using Optax.
+# model using Scipy.
 
 # %%
 training_data = gpx.Dataset(X=scaled_Xtr, y=scaled_ytr)
 
-negative_mll = jit(gpx.ConjugateMLL(negative=True))
-optimiser = ox.adamw(0.05)
+negative_mll = jit(gpx.objectives.ConjugateMLL(negative=True))
 
-opt_posterior, history = gpx.fit(
+opt_posterior, history = gpx.fit_scipy(
     model=posterior,
     objective=negative_mll,
     train_data=training_data,
-    optim=ox.adamw(learning_rate=0.05),
-    num_iters=500,
-    key=key,
 )
 
 # %% [markdown]

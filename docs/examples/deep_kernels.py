@@ -10,7 +10,7 @@
 
 # %%
 # Enable Float64 for more stable matrix inversions.
-from jax.config import config
+from jax import config
 
 config.update("jax_enable_x64", True)
 
@@ -44,8 +44,10 @@ with install_import_hook("gpjax", "beartype.beartype"):
     from gpjax.kernels.base import AbstractKernel
     from gpjax.kernels.computations import AbstractKernelComputation
 
-key = jr.PRNGKey(123)
-plt.style.use("./gpjax.mplstyle")
+key = jr.key(123)
+plt.style.use(
+    "https://raw.githubusercontent.com/JaxGaussianProcesses/GPJax/main/docs/examples/gpjax.mplstyle"
+)
 cols = mpl.rcParams["axes.prop_cycle"].by_key()["color"]
 
 # %% [markdown]
@@ -101,7 +103,7 @@ class DeepKernelFunction(AbstractKernel):
     base_kernel: AbstractKernel = None
     network: nn.Module = static_field(None)
     dummy_x: jax.Array = static_field(None)
-    key: jr.PRNGKeyArray = static_field(jr.PRNGKey(123))
+    key: jax.Array = static_field(jr.key(123))
     nn_params: Any = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -128,7 +130,7 @@ class DeepKernelFunction(AbstractKernel):
 # activation functions between the layers. The first hidden layer contains 64 units,
 # while the second layer contains 32 units. Finally, we'll make the output of our
 # network a three units wide. The corresponding kernel that we define will then be of
-# [ARD form](https://docs.jaxgaussianprocesses.com/examples/kernels/#active-dimensions)
+# [ARD form](https://docs.jaxgaussianprocesses.com/examples/constructing_new_kernels/#active-dimensions)
 # to allow for different lengthscales in each dimension of the feature space.
 # Users may wish to design more intricate network structures for more complex tasks,
 # which functionality is supported well in Haiku.
@@ -161,13 +163,16 @@ forward_linear = Network()
 # kernel and assume a Gaussian likelihood.
 
 # %%
-base_kernel = gpx.Matern52(active_dims=list(range(feature_space_dim)))
+base_kernel = gpx.kernels.Matern52(
+    active_dims=list(range(feature_space_dim)),
+    lengthscale=jnp.ones((feature_space_dim,)),
+)
 kernel = DeepKernelFunction(
     network=forward_linear, base_kernel=base_kernel, key=key, dummy_x=x
 )
-meanf = gpx.Zero()
-prior = gpx.Prior(mean_function=meanf, kernel=kernel)
-likelihood = gpx.Gaussian(num_datapoints=D.n)
+meanf = gpx.mean_functions.Zero()
+prior = gpx.gps.Prior(mean_function=meanf, kernel=kernel)
+likelihood = gpx.likelihoods.Gaussian(num_datapoints=D.n)
 posterior = prior * likelihood
 # %% [markdown]
 # ### Optimisation
@@ -202,7 +207,7 @@ optimiser = ox.chain(
 
 opt_posterior, history = gpx.fit(
     model=posterior,
-    objective=jax.jit(gpx.ConjugateMLL(negative=True)),
+    objective=jax.jit(gpx.objectives.ConjugateMLL(negative=True)),
     train_data=D,
     optim=optimiser,
     num_iters=800,

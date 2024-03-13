@@ -21,7 +21,7 @@
 
 # %%
 # Enable Float64 for more stable matrix inversions.
-from jax.config import config
+from jax import config
 
 config.update("jax_enable_x64", True)
 
@@ -37,8 +37,10 @@ from docs.examples.utils import clean_legend
 with install_import_hook("gpjax", "beartype.beartype"):
     import gpjax as gpx
 
-key = jr.PRNGKey(123)
-plt.style.use("./gpjax.mplstyle")
+key = jr.key(123)
+plt.style.use(
+    "https://raw.githubusercontent.com/JaxGaussianProcesses/GPJax/main/docs/examples/gpjax.mplstyle"
+)
 cols = mpl.rcParams["axes.prop_cycle"].by_key()["color"]
 
 # %% [markdown]
@@ -106,7 +108,7 @@ ax.legend(loc="best")
 # %%
 kernel = gpx.kernels.RBF()
 meanf = gpx.mean_functions.Zero()
-prior = gpx.Prior(mean_function=meanf, kernel=kernel)
+prior = gpx.gps.Prior(mean_function=meanf, kernel=kernel)
 
 # %% [markdown]
 #
@@ -150,7 +152,7 @@ ax = clean_legend(ax)
 # This is defined in GPJax through calling a `Gaussian` instance.
 
 # %%
-likelihood = gpx.Gaussian(num_datapoints=D.n)
+likelihood = gpx.likelihoods.Gaussian(num_datapoints=D.n)
 
 # %% [markdown]
 # The posterior is proportional to the prior multiplied by the likelihood, written as
@@ -179,7 +181,7 @@ posterior = prior * likelihood
 # these parameters by optimising the marginal log-likelihood (MLL).
 
 # %%
-negative_mll = jit(gpx.objectives.ConjugateMLL(negative=True))
+negative_mll = gpx.objectives.ConjugateMLL(negative=True)
 negative_mll(posterior, train_data=D)
 
 
@@ -189,34 +191,34 @@ negative_mll(posterior, train_data=D)
 #     ox.masked(ox.set_to_zero(), static_tree)
 #     )
 # %% [markdown]
+# For researchers, GPJax has the capacity to print the bibtex citation for objects such
+# as the marginal log-likelihood through the `cite()` function.
+
+# %%
+print(gpx.cite(negative_mll))
+
+# %% [markdown]
+# JIT-compiling expensive-to-compute functions such as the marginal log-likelihood is
+# advisable. This can be achieved by wrapping the function in `jax.jit()`.
+
+# %%
+negative_mll = jit(negative_mll)
+
+# %% [markdown]
 # Since most optimisers (including here) minimise a given function, we have realised
 # the negative marginal log-likelihood and just-in-time (JIT) compiled this to
 # accelerate training.
 
 # %% [markdown]
-# We can now define an optimiser with `optax`. For this example we'll use the `adam`
+# We can now define an optimiser. For this example we'll use the `bfgs`
 # optimiser.
 
 # %%
-opt_posterior, history = gpx.fit(
+opt_posterior, history = gpx.fit_scipy(
     model=posterior,
     objective=negative_mll,
     train_data=D,
-    optim=ox.adam(learning_rate=0.01),
-    num_iters=500,
-    safe=True,
-    key=key,
 )
-
-# %% [markdown]
-# The calling of `fit` returns two objects: the optimised posterior and a history of
-# training losses. We can plot the training loss to see how the optimisation has
-# progressed.
-
-# %%
-fig, ax = plt.subplots()
-ax.plot(history, color=cols[1])
-ax.set(xlabel="Training iteration", ylabel="Negative marginal log likelihood")
 
 # %% [markdown]
 # ## Prediction

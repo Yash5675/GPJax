@@ -14,7 +14,7 @@
 
 # %%
 # Enable Float64 for more stable matrix inversions.
-from jax.config import config
+from jax import config
 
 config.update("jax_enable_x64", True)
 
@@ -33,8 +33,10 @@ with install_import_hook("gpjax", "beartype.beartype"):
     import gpjax as gpx
 
 
-key = jr.PRNGKey(123)
-plt.style.use("./gpjax.mplstyle")
+key = jr.key(123)
+plt.style.use(
+    "https://raw.githubusercontent.com/JaxGaussianProcesses/GPJax/main/docs/examples/gpjax.mplstyle"
+)
 cols = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
 # %% [markdown]
@@ -122,7 +124,7 @@ plt.show()
 # optimised. For advice on achieving this, see the
 # [Regression notebook](https://docs.jaxgaussianprocesses.com/examples/regression/)
 # for advice on optimisation and the
-# [Kernels notebook](https://docs.jaxgaussianprocesses.com/examples/kernels/) for
+# [Kernels notebook](https://docs.jaxgaussianprocesses.com/examples/constructing_new_kernels/) for
 # advice on selecting an appropriate kernel.
 
 
@@ -132,16 +134,18 @@ def fit_gp(x: jax.Array, y: jax.Array) -> tfd.MultivariateNormalFullCovariance:
         y = y.reshape(-1, 1)
     D = gpx.Dataset(X=x, y=y)
 
-    likelihood = gpx.Gaussian(num_datapoints=n)
-    posterior = gpx.Prior(mean_function=gpx.Constant(), kernel=gpx.RBF()) * likelihood
+    likelihood = gpx.likelihoods.Gaussian(num_datapoints=n)
+    posterior = (
+        gpx.gps.Prior(
+            mean_function=gpx.mean_functions.Constant(), kernel=gpx.kernels.RBF()
+        )
+        * likelihood
+    )
 
-    opt_posterior, _ = gpx.fit(
+    opt_posterior, _ = gpx.fit_scipy(
         model=posterior,
-        objective=jax.jit(gpx.ConjugateMLL(negative=True)),
+        objective=gpx.objectives.ConjugateMLL(negative=True),
         train_data=D,
-        optim=ox.adamw(learning_rate=0.01),
-        num_iters=500,
-        key=key,
     )
     latent_dist = opt_posterior.predict(xtest, train_data=D)
     return opt_posterior.likelihood(latent_dist)

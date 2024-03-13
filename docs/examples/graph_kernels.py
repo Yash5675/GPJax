@@ -5,11 +5,11 @@
 # of a graph using a Gaussian process with a Matérn kernel presented in
 # <strong data-cite="borovitskiy2021matern"></strong>. For a general discussion of the
 # kernels supported within GPJax, see the
-# [kernels notebook](https://docs.jaxgaussianprocesses.com/examples/kernels).
+# [kernels notebook](https://docs.jaxgaussianprocesses.com/examples/constructing_new_kernels).
 
 # %%
 # Enable Float64 for more stable matrix inversions.
-from jax.config import config
+from jax import config
 
 config.update("jax_enable_x64", True)
 
@@ -27,8 +27,10 @@ import optax as ox
 with install_import_hook("gpjax", "beartype.beartype"):
     import gpjax as gpx
 
-key = jr.PRNGKey(123)
-plt.style.use("./gpjax.mplstyle")
+key = jr.key(123)
+plt.style.use(
+    "https://raw.githubusercontent.com/JaxGaussianProcesses/GPJax/main/docs/examples/gpjax.mplstyle"
+)
 cols = mpl.rcParams["axes.prop_cycle"].by_key()["color"]
 
 # %% [markdown]
@@ -92,13 +94,13 @@ L = nx.laplacian_matrix(G).toarray()
 # %%
 x = jnp.arange(G.number_of_nodes()).reshape(-1, 1)
 
-true_kernel = gpx.GraphKernel(
+true_kernel = gpx.kernels.GraphKernel(
     laplacian=L,
     lengthscale=2.3,
     variance=3.2,
     smoothness=6.1,
 )
-prior = gpx.Prior(mean_function=gpx.Zero(), kernel=true_kernel)
+prior = gpx.gps.Prior(mean_function=gpx.mean_functions.Zero(), kernel=true_kernel)
 
 fx = prior(x)
 y = fx.sample(seed=key, sample_shape=(1,)).reshape(-1, 1)
@@ -117,7 +119,8 @@ sm = plt.cm.ScalarMappable(
     cmap=plt.cm.inferno, norm=plt.Normalize(vmin=vmin, vmax=vmax)
 )
 sm.set_array([])
-cbar = plt.colorbar(sm)
+ax = plt.gca()
+cbar = plt.colorbar(sm, ax=ax)
 
 # %% [markdown]
 #
@@ -130,20 +133,31 @@ cbar = plt.colorbar(sm)
 # For this reason, we simply perform gradient descent on the GP's marginal
 # log-likelihood term as in the
 # [regression notebook](https://docs.jaxgaussianprocesses.com/examples/regression/).
-# We do this using the Adam optimiser provided in `optax`.
+# We do this using the BFGS optimiser provided in `scipy` via 'jaxopt'.
 
 # %%
-likelihood = gpx.Gaussian(num_datapoints=D.n)
-prior = gpx.Prior(mean_function=gpx.Zero(), kernel=gpx.GraphKernel(laplacian=L))
+likelihood = gpx.likelihoods.Gaussian(num_datapoints=D.n)
+kernel = gpx.kernels.GraphKernel(laplacian=L)
+prior = gpx.gps.Prior(mean_function=gpx.mean_functions.Zero(), kernel=kernel)
 posterior = prior * likelihood
 
-opt_posterior, training_history = gpx.fit(
+# %% [markdown]
+#
+# For researchers and the curious reader, GPJax provides the ability to print the
+# bibtex citation for objects such as the graph kernel through the `cite()` function.
+
+# %%
+print(gpx.cite(kernel))
+
+# %% [markdown]
+#
+# With a posterior defined, we can now optimise the model's hyperparameters.
+
+# %%
+opt_posterior, training_history = gpx.fit_scipy(
     model=posterior,
-    objective=jit(gpx.ConjugateMLL(negative=True)),
+    objective=gpx.objectives.ConjugateMLL(negative=True),
     train_data=D,
-    optim=ox.adamw(learning_rate=0.01),
-    num_iters=1000,
-    key=key,
 )
 
 # %% [markdown]
@@ -185,8 +199,8 @@ vmin, vmax = error.min(), error.max()
 sm = plt.cm.ScalarMappable(
     cmap=plt.cm.inferno, norm=plt.Normalize(vmin=vmin, vmax=vmax)
 )
-sm.set_array([])
-cbar = plt.colorbar(sm)
+ax = plt.gca()
+cbar = plt.colorbar(sm, ax=ax)
 
 # %% [markdown]
 #

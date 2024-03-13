@@ -23,26 +23,49 @@ flexibility in extending the code to suit their own needs. The idea is that the
 code should be as close as possible to the maths we write on paper when working
 with GP models.
 
-# Package support
+# Package organisation
 
-GPJax was founded by [Thomas Pinder](https://github.com/thomaspinder). Today,
-the maintenance of GPJax is undertaken by [Thomas
-Pinder](https://github.com/thomaspinder) and [Daniel
-Dodd](https://github.com/Daniel-Dodd).
+## Contributions
 
 We would be delighted to receive contributions from interested individuals and
 groups. To learn how you can get involved, please read our [guide for
-contributing](https://github.com/JaxGaussianProcesses/GPJax/blob/master/CONTRIBUTING.md).
+contributing](https://github.com/JaxGaussianProcesses/GPJax/blob/main/docs/contributing.md).
 If you have any questions, we encourage you to [open an
 issue](https://github.com/JaxGaussianProcesses/GPJax/issues/new/choose). For
 broader conversations, such as best GP fitting practices or questions about the
 mathematics of GPs, we invite you to [open a
 discussion](https://github.com/JaxGaussianProcesses/GPJax/discussions).
 
+Another way you can contribute to GPJax is through [issue
+triaging](https://www.codetriage.com/what).  This can include reproducing bug reports,
+asking for vital information such as version numbers and reproduction instructions, or
+identifying stale issues. If you would like to begin triaging issues, an easy way to get
+started is to
+[subscribe to GPJax on CodeTriage](https://www.codetriage.com/jaxgaussianprocesses/gpjax).
+
+As a contributor to GPJax, you are expected to abide by our [code of
+conduct](docs/CODE_OF_CONDUCT.md). If you feel that you have either experienced or
+witnessed behaviour that violates this standard, then we ask that you report any such
+behaviours through [this form](https://jaxgaussianprocesses.com/contact/) or reach out to
+one of the project's [_gardeners_](https://docs.jaxgaussianprocesses.com/GOVERNANCE/#roles).
+
 Feel free to join our [Slack
 Channel](https://join.slack.com/t/gpjax/shared_invite/zt-1da57pmjn-rdBCVg9kApirEEn2E5Q2Zw),
 where we can discuss the development of GPJax and broader support for Gaussian
 process modelling.
+
+
+## Governance
+
+GPJax was founded by [Thomas Pinder](https://github.com/thomaspinder). Today, the
+project's gardeners are [daniel-dodd@](https://github.com/daniel-dodd),
+[henrymoss@](https://github.com/henrymoss), [st--@](https://github.com/st--), and
+[thomaspinder@](https://github.com/thomaspinder), listed in alphabetical order. The full
+governance structure of GPJax is detailed [here](docs/GOVERNANCE.md). We appreciate all
+[the contributors to
+GPJax](https://github.com/JaxGaussianProcesses/GPJax/graphs/contributors) who have
+helped to shape GPJax into the package it is today.
+
 
 # Supported methods and interfaces
 
@@ -54,20 +77,21 @@ process modelling.
 > - [**Stochastic Variational Inference**](https://docs.jaxgaussianprocesses.com/examples/uncollapsed_vi/)
 > - [**BlackJax Integration**](https://docs.jaxgaussianprocesses.com/examples/classification/#mcmc-inference)
 > - [**Laplace Approximation**](https://docs.jaxgaussianprocesses.com/examples/classification/#laplace-approximation)
-> - [**Inference on Non-Euclidean Spaces**](https://docs.jaxgaussianprocesses.com/examples/kernels/#custom-kernel)
+> - [**Inference on Non-Euclidean Spaces**](https://docs.jaxgaussianprocesses.com/examples/constructing_new_kernels/#custom-kernel)
 > - [**Inference on Graphs**](https://docs.jaxgaussianprocesses.com/examples/graph_kernels/)
 > - [**Pathwise Sampling**](https://docs.jaxgaussianprocesses.com/examples/spatial/)
 > - [**Learning Gaussian Process Barycentres**](https://docs.jaxgaussianprocesses.com/examples/barycentres/)
 > - [**Deep Kernel Regression**](https://docs.jaxgaussianprocesses.com/examples/deep_kernels/)
 > - [**Poisson Regression**](https://docs.jaxgaussianprocesses.com/examples/poisson/)
+> - [**Bayesian Optimisation**](https://docs.jaxgaussianprocesses.com/examples/bayesian_optimisation/)
 
 ## Guides for customisation
 >
-> - [**Custom kernels**](https://docs.jaxgaussianprocesses.com/examples/kernels/#custom-kernel)
+> - [**Custom kernels**](https://docs.jaxgaussianprocesses.com/examples/constructing_new_kernels/#custom-kernel)
 > - [**UCI regression**](https://docs.jaxgaussianprocesses.com/examples/yacht/)
 
 ## Conversion between `.ipynb` and `.py`
-Above examples are stored in [examples](examples) directory in the double
+Above examples are stored in [examples](docs/examples) directory in the double
 percent (`py:percent`) format. Checkout [jupytext
 using-cli](https://jupytext.readthedocs.io/en/latest/using-cli.html) for more
 info.
@@ -89,13 +113,17 @@ jupytext --to py:percent example.ipynb
 Let us import some dependencies and simulate a toy dataset $\mathcal{D}$.
 
 ```python
+from jax import config
+
+config.update("jax_enable_x64", True)
+
 import gpjax as gpx
 from jax import grad, jit
 import jax.numpy as jnp
 import jax.random as jr
 import optax as ox
 
-key = jr.PRNGKey(123)
+key = jr.key(123)
 
 f = lambda x: 10 * jnp.sin(x)
 
@@ -107,10 +135,10 @@ D = gpx.Dataset(X=x, y=y)
 # Construct the prior
 meanf = gpx.mean_functions.Zero()
 kernel = gpx.kernels.RBF()
-prior = gpx.Prior(mean_function=meanf, kernel = kernel)
+prior = gpx.gps.Prior(mean_function=meanf, kernel = kernel)
 
 # Define a likelihood
-likelihood = gpx.Gaussian(num_datapoints = n)
+likelihood = gpx.likelihoods.Gaussian(num_datapoints = n)
 
 # Construct the posterior
 posterior = prior * likelihood
@@ -174,12 +202,7 @@ pip install gpjax
 > conda create -n gpjax_experimental python=3.10.0
 > conda activate gpjax_experimental
 >  ```
->
-> and recommend you check your installation passes the supplied unit tests:
->
-> ```python
-> poetry run pytest
-> ```
+
 
 Clone a copy of the repository to your local machine and run the setup
 configuration in development mode.
@@ -188,6 +211,12 @@ git clone https://github.com/JaxGaussianProcesses/GPJax.git
 cd GPJax
 poetry install
 ```
+
+> We recommend you check your installation passes the supplied unit tests:
+>
+> ```python
+> poetry run pytest
+> ```
 
 # Citing GPJax
 

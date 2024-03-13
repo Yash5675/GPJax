@@ -15,7 +15,7 @@
 # ==============================================================================
 
 
-from jax.config import config
+from jax import config
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -23,11 +23,15 @@ import pytest
 # Enable Float64 for more stable matrix inversions.
 config.update("jax_enable_x64", True)
 
-from gpjax.gaussian_distribution import GaussianDistribution
-from gpjax.linops.dense_linear_operator import DenseLinearOperator
-from gpjax.linops.diagonal_linear_operator import DiagonalLinearOperator
+import cola
+from cola.ops import (
+    Dense,
+    Diagonal,
+)
 
-_key = jr.PRNGKey(seed=42)
+from gpjax.distributions import GaussianDistribution
+
+_key = jr.key(seed=42)
 
 from tensorflow_probability.substrates.jax.distributions import (
     MultivariateNormalDiag,
@@ -37,7 +41,7 @@ from tensorflow_probability.substrates.jax.distributions import (
 
 def approx_equal(res: jnp.ndarray, actual: jnp.ndarray) -> bool:
     """Check if two arrays are approximately equal."""
-    return jnp.linalg.norm(res - actual) < 1e-6
+    return jnp.linalg.norm(res - actual) < 1e-5
 
 
 @pytest.mark.parametrize("n", [1, 2, 5, 100])
@@ -49,12 +53,15 @@ def test_array_arguments(n: int) -> None:
     # check that cholesky does not error
     _L = jnp.linalg.cholesky(covariance)  # noqa: F841
 
-    dist = GaussianDistribution(loc=mean, scale=DenseLinearOperator(covariance))
+    dist = GaussianDistribution(loc=mean, scale=cola.PSD(Dense(covariance)))
 
     assert approx_equal(dist.mean(), mean)
     assert approx_equal(dist.variance(), covariance.diagonal())
     assert approx_equal(dist.stddev(), jnp.sqrt(covariance.diagonal()))
     assert approx_equal(dist.covariance(), covariance)
+
+    assert isinstance(dist.scale, Dense)
+    assert cola.PSD in dist.scale.annotations
 
     y = jr.uniform(_key, shape=(n,))
 
@@ -70,8 +77,13 @@ def test_diag_linear_operator(n: int) -> None:
     mean = jr.uniform(key_mean, shape=(n,))
     diag = jr.uniform(key_diag, shape=(n,))
 
-    dist_diag = GaussianDistribution(loc=mean, scale=DiagonalLinearOperator(diag**2))
+    # We purosely forget to add a PSD annotation to the diagonal matrix.
+    dist_diag = GaussianDistribution(loc=mean, scale=Diagonal(diag**2))
     tfp_dist = MultivariateNormalDiag(loc=mean, scale_diag=diag)
+
+    # We check that the PSD annotation is added automatically.
+    assert isinstance(dist_diag.scale, Diagonal)
+    assert cola.PSD in dist_diag.scale.annotations
 
     assert approx_equal(dist_diag.mean(), tfp_dist.mean())
     assert approx_equal(dist_diag.mode(), tfp_dist.mode())
@@ -101,7 +113,7 @@ def test_dense_linear_operator(n: int) -> None:
 
     sqrt = jnp.linalg.cholesky(covariance + jnp.eye(n) * 1e-10)
 
-    dist_dense = GaussianDistribution(loc=mean, scale=DenseLinearOperator(covariance))
+    dist_dense = GaussianDistribution(loc=mean, scale=cola.PSD(Dense(covariance)))
     tfp_dist = MultivariateNormalFullCovariance(loc=mean, covariance_matrix=covariance)
 
     assert approx_equal(dist_dense.mean(), tfp_dist.mean())
@@ -132,8 +144,8 @@ def test_kl_divergence(n: int) -> None:
     covariance_a = sqrt_a @ sqrt_a.T
     covariance_b = sqrt_b @ sqrt_b.T
 
-    dist_a = GaussianDistribution(loc=mean_a, scale=DenseLinearOperator(covariance_a))
-    dist_b = GaussianDistribution(loc=mean_b, scale=DenseLinearOperator(covariance_b))
+    dist_a = GaussianDistribution(loc=mean_a, scale=cola.PSD(Dense(covariance_a)))
+    dist_b = GaussianDistribution(loc=mean_b, scale=cola.PSD(Dense(covariance_b)))
 
     tfp_dist_a = MultivariateNormalFullCovariance(
         loc=mean_a, covariance_matrix=covariance_a

@@ -12,15 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
+# from __future__ import annotations
 from abc import abstractmethod
 from dataclasses import dataclass
+from typing import (
+    TYPE_CHECKING,
+    Generic,
+    TypeVar,
+    overload,
+)
 
 from beartype.typing import (
     Any,
     Callable,
     Optional,
+    Union,
 )
+import cola
+from cola.linalg.decompositions.decompositions import Cholesky
 import jax.numpy as jnp
 from jax.random import (
     PRNGKey,
@@ -37,14 +46,15 @@ from gpjax.base import (
     static_field,
 )
 from gpjax.dataset import Dataset
-from gpjax.gaussian_distribution import GaussianDistribution
+from gpjax.distributions import GaussianDistribution
 from gpjax.kernels import RFF
 from gpjax.kernels.base import AbstractKernel
 from gpjax.likelihoods import (
     AbstractLikelihood,
     Gaussian,
+    NonGaussian,
 )
-from gpjax.linops import identity
+from gpjax.lower_cholesky import lower_cholesky
 from gpjax.mean_functions import AbstractMeanFunction
 from gpjax.typing import (
     Array,
@@ -52,13 +62,19 @@ from gpjax.typing import (
     KeyArray,
 )
 
+Kernel = TypeVar("Kernel", bound=AbstractKernel)
+MeanFunction = TypeVar("MeanFunction", bound=AbstractMeanFunction)
+Likelihood = TypeVar("Likelihood", bound=AbstractLikelihood)
+NonGaussianLikelihood = TypeVar("NonGaussianLikelihood", bound=NonGaussian)
+GaussianLikelihood = TypeVar("GaussianLikelihood", bound=Gaussian)
+
 
 @dataclass
-class AbstractPrior(Module):
-    """Abstract Gaussian process prior."""
+class AbstractPrior(Module, Generic[MeanFunction, Kernel]):
+    r"""Abstract Gaussian process prior."""
 
-    kernel: AbstractKernel
-    mean_function: AbstractMeanFunction
+    kernel: Kernel
+    mean_function: MeanFunction
     jitter: float = static_field(1e-6)
 
     def __call__(self, *args: Any, **kwargs: Any) -> GaussianDistribution:
@@ -108,7 +124,7 @@ class AbstractPrior(Module):
 # GP Priors
 #######################
 @dataclass
-class Prior(AbstractPrior):
+class Prior(AbstractPrior[MeanFunction, Kernel]):
     r"""A Gaussian process prior object.
 
     The GP is parameterised by a
@@ -120,9 +136,7 @@ class Prior(AbstractPrior):
     function $`k(\cdot, \cdot)`$ is given by
     $`p(f(\cdot)) = \mathcal{GP}(m(\cdot), k(\cdot, \cdot))`$.
 
-    To invoke a `Prior` distribution, only a kernel function is required. By
-    default, the mean function will be set to zero. In general, this assumption
-    will be reasonable assuming the data being modelled has been centred.
+    To invoke a `Prior` distribution, a kernel and mean function must be specified.
 
     Example:
     ```python
@@ -130,11 +144,33 @@ class Prior(AbstractPrior):
 
         >>> kernel = gpx.kernels.RBF()
         >>> meanf = gpx.mean_functions.Zero()
-        >>> prior = gpx.Prior(mean_function=meanf, kernel = kernel)
+        >>> prior = gpx.gps.Prior(mean_function=meanf, kernel = kernel)
     ```
     """
 
-    def __mul__(self, other: AbstractLikelihood):
+    if TYPE_CHECKING:
+
+        @overload
+        def __mul__(
+            self, other: GaussianLikelihood
+        ) -> "ConjugatePosterior[Prior[MeanFunction, Kernel], GaussianLikelihood]":
+            ...
+
+        @overload
+        def __mul__(
+            self, other: NonGaussianLikelihood
+        ) -> (
+            "NonConjugatePosterior[Prior[MeanFunction, Kernel], NonGaussianLikelihood]"
+        ):
+            ...
+
+        @overload
+        def __mul__(
+            self, other: Likelihood
+        ) -> "AbstractPosterior[Prior[MeanFunction, Kernel], Likelihood]":
+            ...
+
+    def __mul__(self, other):
         r"""Combine the prior with a likelihood to form a posterior distribution.
 
         The product of a prior and likelihood is proportional to the posterior
@@ -152,7 +188,7 @@ class Prior(AbstractPrior):
             >>>
             >>> meanf = gpx.mean_functions.Zero()
             >>> kernel = gpx.kernels.RBF()
-            >>> prior = gpx.Prior(mean_function=meanf, kernel = kernel)
+            >>> prior = gpx.gps.Prior(mean_function=meanf, kernel = kernel)
             >>> likelihood = gpx.likelihoods.Gaussian(num_datapoints=100)
             >>>
             >>> prior * likelihood
@@ -168,7 +204,29 @@ class Prior(AbstractPrior):
         """
         return construct_posterior(prior=self, likelihood=other)
 
-    def __rmul__(self, other: AbstractLikelihood):
+    if TYPE_CHECKING:
+
+        @overload
+        def __rmul__(
+            self, other: GaussianLikelihood
+        ) -> "ConjugatePosterior[Prior[MeanFunction, Kernel], GaussianLikelihood]":
+            ...
+
+        @overload
+        def __rmul__(
+            self, other: NonGaussianLikelihood
+        ) -> (
+            "NonConjugatePosterior[Prior[MeanFunction, Kernel], NonGaussianLikelihood]"
+        ):
+            ...
+
+        @overload
+        def __rmul__(
+            self, other: Likelihood
+        ) -> "AbstractPosterior[Prior[MeanFunction, Kernel], Likelihood]":
+            ...
+
+    def __rmul__(self, other):
         r"""Combine the prior with a likelihood to form a posterior distribution.
 
         Reimplement the multiplication operator to allow for order-invariant
@@ -201,7 +259,7 @@ class Prior(AbstractPrior):
             >>>
             >>> kernel = gpx.kernels.RBF()
             >>> meanf = gpx.mean_functions.Zero()
-            >>> prior = gpx.Prior(mean_function=meanf, kernel = kernel)
+            >>> prior = gpx.gps.Prior(mean_function=meanf, kernel = kernel)
             >>>
             >>> prior.predict(jnp.linspace(0, 1, 100))
         ```
@@ -218,7 +276,8 @@ class Prior(AbstractPrior):
         x = test_inputs
         mx = self.mean_function(x)
         Kxx = self.kernel.gram(x)
-        Kxx += identity(x.shape[0]) * self.jitter
+        Kxx += cola.ops.I_like(Kxx) * self.jitter
+        Kxx = cola.PSD(Kxx)
 
         return GaussianDistribution(jnp.atleast_1d(mx.squeeze()), Kxx)
 
@@ -257,11 +316,11 @@ class Prior(AbstractPrior):
             >>> import gpjax as gpx
             >>> import jax.numpy as jnp
             >>> import jax.random as jr
-            >>> key = jr.PRNGKey(123)
+            >>> key = jr.key(123)
             >>>
             >>> meanf = gpx.mean_functions.Zero()
             >>> kernel = gpx.kernels.RBF()
-            >>> prior = gpx.Prior(mean_function=meanf, kernel = kernel)
+            >>> prior = gpx.gps.Prior(mean_function=meanf, kernel = kernel)
             >>>
             >>> sample_fn = prior.sample_approx(10, key)
             >>> sample_fn(jnp.linspace(0, 1, 100).reshape(-1, 1))
@@ -296,19 +355,22 @@ class Prior(AbstractPrior):
         return sample_fn
 
 
+PriorType = TypeVar("PriorType", bound=AbstractPrior)
+
+
 #######################
 # GP Posteriors
 #######################
 @dataclass
-class AbstractPosterior(Module):
+class AbstractPosterior(Module, Generic[PriorType, Likelihood]):
     r"""Abstract Gaussian process posterior.
 
     The base GP posterior object conditioned on an observed dataset. All
     posterior objects should inherit from this class.
     """
 
-    prior: AbstractPrior
-    likelihood: AbstractLikelihood
+    prior: AbstractPrior[MeanFunction, Kernel]
+    likelihood: Likelihood
     jitter: float = static_field(1e-6)
 
     def __call__(self, *args: Any, **kwargs: Any) -> GaussianDistribution:
@@ -353,7 +415,7 @@ class AbstractPosterior(Module):
 
 
 @dataclass
-class ConjugatePosterior(AbstractPosterior):
+class ConjugatePosterior(AbstractPosterior[PriorType, GaussianLikelihood]):
     r"""A Conjuate Gaussian process posterior object.
 
     A Gaussian process posterior distribution when the constituent likelihood
@@ -385,7 +447,7 @@ class ConjugatePosterior(AbstractPosterior):
             >>> import gpjax as gpx
             >>> import jax.numpy as jnp
 
-            >>> prior = gpx.Prior(
+            >>> prior = gpx.gps.Prior(
                     mean_function = gpx.mean_functions.Zero(),
                     kernel = gpx.kernels.RBF()
                 )
@@ -433,8 +495,8 @@ class ConjugatePosterior(AbstractPosterior):
                 >>> D = gpx.Dataset(X=xtrain, y=ytrain)
                 >>> xtest = jnp.linspace(0, 1).reshape(-1, 1)
                 >>>
-                >>> prior = gpx.Prior(mean_function = gpx.Zero(), kernel = gpx.RBF())
-                >>> posterior = prior * gpx.Gaussian(num_datapoints = D.n)
+                >>> prior = gpx.gps.Prior(mean_function = gpx.mean_functions.Zero(), kernel = gpx.kernels.RBF())
+                >>> posterior = prior * gpx.likelihoods.Gaussian(num_datapoints = D.n)
                 >>> predictive_dist = posterior(xtest, D)
             ```
 
@@ -446,39 +508,39 @@ class ConjugatePosterior(AbstractPosterior):
 
         Returns
         -------
-            GaussianDistribution: A
-                function that accepts an input array and returns the predictive
-                    distribution as a `GaussianDistribution`.
+            GaussianDistribution: A function that accepts an input array and
+                returns the predictive distribution as a `GaussianDistribution`.
         """
         # Unpack training data
-        x, y, n = train_data.X, train_data.y, train_data.n
+        x, y = train_data.X, train_data.y
 
         # Unpack test inputs
-        t, n_test = test_inputs, test_inputs.shape[0]
+        t = test_inputs
 
         # Observation noise o²
-        obs_noise = self.likelihood.obs_noise
+        obs_noise = self.likelihood.obs_stddev**2
         mx = self.prior.mean_function(x)
 
         # Precompute Gram matrix, Kxx, at training inputs, x
-        Kxx = self.prior.kernel.gram(x) + (identity(n) * self.prior.jitter)
+        Kxx = self.prior.kernel.gram(x)
+        Kxx += cola.ops.I_like(Kxx) * self.jitter
 
         # Σ = Kxx + Io²
-        Sigma = Kxx + identity(n) * obs_noise
+        Sigma = Kxx + cola.ops.I_like(Kxx) * obs_noise
+        Sigma = cola.PSD(Sigma)
 
         mean_t = self.prior.mean_function(t)
         Ktt = self.prior.kernel.gram(t)
         Kxt = self.prior.kernel.cross_covariance(x, t)
-
-        # Σ⁻¹ Kxt
-        Sigma_inv_Kxt = Sigma.solve(Kxt)
+        Sigma_inv_Kxt = cola.solve(Sigma, Kxt)
 
         # μt  +  Ktx (Kxx + Io²)⁻¹ (y  -  μx)
         mean = mean_t + jnp.matmul(Sigma_inv_Kxt.T, y - mx)
 
         # Ktt  -  Ktx (Kxx + Io²)⁻¹ Kxt, TODO: Take advantage of covariance structure to compute Schur complement more efficiently.
         covariance = Ktt - jnp.matmul(Kxt.T, Sigma_inv_Kxt)
-        covariance += identity(n_test) * self.prior.jitter
+        covariance += cola.ops.I_like(covariance) * self.prior.jitter
+        covariance = cola.PSD(covariance)
 
         return GaussianDistribution(jnp.atleast_1d(mean.squeeze()), covariance)
 
@@ -538,17 +600,16 @@ class ConjugatePosterior(AbstractPosterior):
 
         # sample weights v for canonical features
         # v = Σ⁻¹ (y + ε - ɸ⍵) for  Σ = Kxx + Io² and ε ᯈ N(0, o²)
+        obs_var = self.likelihood.obs_stddev**2
         Kxx = self.prior.kernel.gram(train_data.X)  #  [N, N]
-        Sigma = Kxx + identity(train_data.n) * (
-            self.likelihood.obs_noise + self.jitter
-        )  #  [N, N]
-        eps = jnp.sqrt(self.likelihood.obs_noise) * normal(
-            key, [train_data.n, num_samples]
-        )  #  [N, B]
+        Sigma = Kxx + cola.ops.I_like(Kxx) * (obs_var + self.jitter)  #  [N, N]
+        eps = jnp.sqrt(obs_var) * normal(key, [train_data.n, num_samples])  #  [N, B]
         y = train_data.y - self.prior.mean_function(train_data.X)  # account for mean
         Phi = fourier_feature_fn(train_data.X)
-        canonical_weights = Sigma.solve(
-            y + eps - jnp.inner(Phi, fourier_weights)
+        canonical_weights = cola.solve(
+            Sigma,
+            y + eps - jnp.inner(Phi, fourier_weights),
+            Cholesky(),
         )  #  [N, B]
 
         def sample_fn(test_inputs: Float[Array, "n D"]) -> Float[Array, "n B"]:
@@ -573,7 +634,7 @@ class ConjugatePosterior(AbstractPosterior):
 
 
 @dataclass
-class NonConjugatePosterior(AbstractPosterior):
+class NonConjugatePosterior(AbstractPosterior[PriorType, NonGaussianLikelihood]):
     r"""A non-conjugate Gaussian process posterior object.
 
     A Gaussian process posterior object for models where the likelihood is
@@ -586,7 +647,7 @@ class NonConjugatePosterior(AbstractPosterior):
     from, or optimise an approximation to, the posterior distribution.
     """
 
-    latent: Float[Array, "N 1"] = param_field(None)
+    latent: Union[Float[Array, "N 1"], None] = param_field(None)
     key: KeyArray = static_field(PRNGKey(42))
 
     def __post_init__(self):
@@ -616,7 +677,7 @@ class NonConjugatePosterior(AbstractPosterior):
                 a `dx.Distribution`.
         """
         # Unpack training data
-        x, n = train_data.X, train_data.n
+        x = train_data.X
 
         # Unpack mean function and kernel
         mean_function = self.prior.mean_function
@@ -624,19 +685,20 @@ class NonConjugatePosterior(AbstractPosterior):
 
         # Precompute lower triangular of Gram matrix, Lx, at training inputs, x
         Kxx = kernel.gram(x)
-        Kxx += identity(n) * self.prior.jitter
-        Lx = Kxx.to_root()
+        Kxx += cola.ops.I_like(Kxx) * self.prior.jitter
+        Kxx = cola.PSD(Kxx)
+        Lx = lower_cholesky(Kxx)
 
         # Unpack test inputs
-        t, n_test = test_inputs, test_inputs.shape[0]
+        t = test_inputs
 
         # Compute terms of the posterior predictive distribution
         Ktx = kernel.cross_covariance(t, x)
-        Ktt = kernel.gram(t) + identity(n_test) * self.prior.jitter
+        Ktt = kernel.gram(t)
         mean_t = mean_function(t)
 
         # Lx⁻¹ Kxt
-        Lx_inv_Kxt = Lx.solve(Ktx.T)
+        Lx_inv_Kxt = cola.solve(Lx, Ktx.T, Cholesky())
 
         # Whitened function values, wx, corresponding to the inputs, x
         wx = self.latent
@@ -646,7 +708,8 @@ class NonConjugatePosterior(AbstractPosterior):
 
         # Ktt - Ktx Kxx⁻¹ Kxt, TODO: Take advantage of covariance structure to compute Schur complement more efficiently.
         covariance = Ktt - jnp.matmul(Lx_inv_Kxt.T, Lx_inv_Kxt)
-        covariance += identity(n_test) * self.prior.jitter
+        covariance += cola.ops.I_like(covariance) * self.prior.jitter
+        covariance = cola.PSD(covariance)
 
         return GaussianDistribution(jnp.atleast_1d(mean.squeeze()), covariance)
 
@@ -654,9 +717,23 @@ class NonConjugatePosterior(AbstractPosterior):
 #######################
 # Utils
 #######################
+
+
+@overload
 def construct_posterior(
-    prior: Prior, likelihood: AbstractLikelihood
-) -> AbstractPosterior:
+    prior: PriorType, likelihood: GaussianLikelihood
+) -> ConjugatePosterior[PriorType, GaussianLikelihood]:
+    ...
+
+
+@overload
+def construct_posterior(
+    prior: PriorType, likelihood: NonGaussianLikelihood
+) -> NonConjugatePosterior[PriorType, NonGaussianLikelihood]:
+    ...
+
+
+def construct_posterior(prior, likelihood):
     r"""Utility function for constructing a posterior object from a prior and
     likelihood. The function will automatically select the correct posterior
     object based on the likelihood.
@@ -681,7 +758,7 @@ def construct_posterior(
 def _build_fourier_features_fn(
     prior: Prior, num_features: int, key: KeyArray
 ) -> Callable[[Float[Array, "N D"]], Float[Array, "N L"]]:
-    """Return a function that evaluates features sampled from the Fourier feature
+    r"""Return a function that evaluates features sampled from the Fourier feature
     decomposition of the prior's kernel.
 
     Args:

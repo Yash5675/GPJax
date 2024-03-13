@@ -25,7 +25,7 @@
 
 # %%
 # Enable Float64 for more stable matrix inversions.
-from jax.config import config
+from jax import config
 
 config.update("jax_enable_x64", True)
 
@@ -51,8 +51,10 @@ with install_import_hook("gpjax", "beartype.beartype"):
 
 tfd = tfp.distributions
 identity_matrix = jnp.eye
-key = jr.PRNGKey(123)
-plt.style.use("./gpjax.mplstyle")
+key = jr.key(123)
+plt.style.use(
+    "https://raw.githubusercontent.com/JaxGaussianProcesses/GPJax/main/docs/examples/gpjax.mplstyle"
+)
 cols = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
 # %% [markdown]
@@ -87,10 +89,10 @@ ax.scatter(x, y)
 # choose a Bernoulli likelihood with a probit link function.
 
 # %%
-kernel = gpx.RBF()
-meanf = gpx.Constant()
-prior = gpx.Prior(mean_function=meanf, kernel=kernel)
-likelihood = gpx.Bernoulli(num_datapoints=D.n)
+kernel = gpx.kernels.RBF()
+meanf = gpx.mean_functions.Constant()
+prior = gpx.gps.Prior(mean_function=meanf, kernel=kernel)
+likelihood = gpx.likelihoods.Bernoulli(num_datapoints=D.n)
 
 # %% [markdown]
 # We construct the posterior through the product of our prior and likelihood.
@@ -114,7 +116,7 @@ print(type(posterior))
 # Optax's optimisers.
 
 # %%
-negative_lpd = jax.jit(gpx.LogPosteriorDensity(negative=True))
+negative_lpd = jax.jit(gpx.objectives.LogPosteriorDensity(negative=True))
 
 optimiser = ox.adam(learning_rate=0.01)
 
@@ -205,13 +207,17 @@ ax.legend()
 # datapoints below.
 
 # %%
+import cola
+from gpjax.lower_cholesky import lower_cholesky
+
 gram, cross_covariance = (kernel.gram, kernel.cross_covariance)
 jitter = 1e-6
 
 # Compute (latent) function value map estimates at training points:
 Kxx = opt_posterior.prior.kernel.gram(x)
 Kxx += identity_matrix(D.n) * jitter
-Lx = Kxx.to_root()
+Kxx = cola.PSD(Kxx)
+Lx = lower_cholesky(Kxx)
 f_hat = Lx @ opt_posterior.latent
 
 # Negative Hessian,  H = -∇²p_tilde(y|f):
@@ -248,16 +254,13 @@ def construct_laplace(test_inputs: Float[Array, "N D"]) -> tfd.MultivariateNorma
     Kxt = opt_posterior.prior.kernel.cross_covariance(x, test_inputs)
     Kxx = opt_posterior.prior.kernel.gram(x)
     Kxx += identity_matrix(D.n) * jitter
-    Lx = Kxx.to_root()
-
-    # Lx⁻¹ Kxt
-    Lx_inv_Ktx = Lx.solve(Kxt)
+    Kxx = cola.PSD(Kxx)
 
     # Kxx⁻¹ Kxt
-    Kxx_inv_Ktx = Lx.T.solve(Lx_inv_Ktx)
+    Kxx_inv_Kxt = cola.solve(Kxx, Kxt)
 
     # Ktx Kxx⁻¹[ H⁻¹ ] Kxx⁻¹ Kxt
-    laplace_cov_term = jnp.matmul(jnp.matmul(Kxx_inv_Ktx.T, H_inv), Kxx_inv_Ktx)
+    laplace_cov_term = jnp.matmul(jnp.matmul(Kxx_inv_Kxt.T, H_inv), Kxx_inv_Kxt)
 
     mean = map_latent_dist.mean()
     covariance = map_latent_dist.covariance() + laplace_cov_term
@@ -342,7 +345,7 @@ ax.legend()
 num_adapt = 500
 num_samples = 500
 
-lpd = jax.jit(gpx.LogPosteriorDensity(negative=False))
+lpd = jax.jit(gpx.objectives.LogPosteriorDensity(negative=False))
 unconstrained_lpd = jax.jit(lambda tree: lpd(tree.constrain(), D))
 
 adapt = blackjax.window_adaptation(

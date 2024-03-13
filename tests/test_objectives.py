@@ -1,23 +1,25 @@
 import jax
+from jax import config
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
 import gpjax as gpx
-from gpjax import (
-    Bernoulli,
-    Gaussian,
-    Prior,
-)
 from gpjax.dataset import Dataset
+from gpjax.gps import Prior
+from gpjax.likelihoods import Gaussian
 from gpjax.objectives import (
     ELBO,
     AbstractObjective,
     CollapsedELBO,
+    ConjugateLOOCV,
     ConjugateMLL,
     LogPosteriorDensity,
     NonConjugateMLL,
 )
+
+# Enable Float64 for more stable matrix inversions.
+config.update("jax_enable_x64", True)
 
 
 def test_abstract_objective():
@@ -55,14 +57,15 @@ def build_data(num_datapoints: int, num_dims: int, key, binary: bool):
 def test_conjugate_mll(
     num_datapoints: int, num_dims: int, negative: bool, jit_compile: bool, key_val: int
 ):
-    key = jr.PRNGKey(key_val)
+    key = jr.key(key_val)
     D = build_data(num_datapoints, num_dims, key, binary=False)
 
     # Build model
-    p = Prior(
-        kernel=gpx.RBF(active_dims=list(range(num_dims))), mean_function=gpx.Constant()
+    p = gpx.gps.Prior(
+        kernel=gpx.kernels.RBF(active_dims=list(range(num_dims))),
+        mean_function=gpx.mean_functions.Constant(),
     )
-    likelihood = Gaussian(num_datapoints=num_datapoints)
+    likelihood = gpx.likelihoods.Gaussian(num_datapoints=num_datapoints)
     post = p * likelihood
 
     mll = ConjugateMLL(negative=negative)
@@ -81,17 +84,48 @@ def test_conjugate_mll(
 @pytest.mark.parametrize("negative", [False, True])
 @pytest.mark.parametrize("jit_compile", [False, True])
 @pytest.mark.parametrize("key_val", [123, 42])
-def test_non_conjugate_mll(
+def test_conjugate_loocv(
     num_datapoints: int, num_dims: int, negative: bool, jit_compile: bool, key_val: int
 ):
-    key = jr.PRNGKey(key_val)
-    D = build_data(num_datapoints, num_dims, key, binary=True)
+    key = jr.key(key_val)
+    D = build_data(num_datapoints, num_dims, key, binary=False)
 
     # Build model
     p = Prior(
-        kernel=gpx.RBF(active_dims=list(range(num_dims))), mean_function=gpx.Constant()
+        kernel=gpx.kernels.RBF(active_dims=list(range(num_dims))),
+        mean_function=gpx.mean_functions.Constant(),
     )
-    likelihood = Bernoulli(num_datapoints=num_datapoints)
+    likelihood = Gaussian(num_datapoints=num_datapoints)
+    post = p * likelihood
+
+    loocv = ConjugateLOOCV(negative=negative)
+    assert isinstance(loocv, AbstractObjective)
+
+    if jit_compile:
+        loocv = jax.jit(loocv)
+
+    evaluation = loocv(post, D)
+    assert isinstance(evaluation, jax.Array)
+    assert evaluation.shape == ()
+
+
+@pytest.mark.parametrize("num_datapoints", [1, 2, 10])
+@pytest.mark.parametrize("num_dims", [1, 2, 3])
+@pytest.mark.parametrize("negative", [False, True])
+@pytest.mark.parametrize("jit_compile", [False, True])
+@pytest.mark.parametrize("key_val", [123, 42])
+def test_non_conjugate_mll(
+    num_datapoints: int, num_dims: int, negative: bool, jit_compile: bool, key_val: int
+):
+    key = jr.key(key_val)
+    D = build_data(num_datapoints, num_dims, key, binary=True)
+
+    # Build model
+    p = gpx.gps.Prior(
+        kernel=gpx.kernels.RBF(active_dims=list(range(num_dims))),
+        mean_function=gpx.mean_functions.Constant(),
+    )
+    likelihood = gpx.likelihoods.Bernoulli(num_datapoints=num_datapoints)
     post = p * likelihood
 
     mll = NonConjugateMLL(negative=negative)
@@ -118,17 +152,20 @@ def test_non_conjugate_mll(
 def test_collapsed_elbo(
     num_datapoints: int, num_dims: int, negative: bool, jit_compile: bool, key_val: int
 ):
-    key = jr.PRNGKey(key_val)
+    key = jr.key(key_val)
     D = build_data(num_datapoints, num_dims, key, binary=False)
     z = jr.uniform(
         key=key, minval=-2.0, maxval=2.0, shape=(num_datapoints // 2, num_dims)
     )
 
-    p = Prior(
-        kernel=gpx.RBF(active_dims=list(range(num_dims))), mean_function=gpx.Constant()
+    p = gpx.gps.Prior(
+        kernel=gpx.kernels.RBF(active_dims=list(range(num_dims))),
+        mean_function=gpx.mean_functions.Constant(),
     )
-    likelihood = Gaussian(num_datapoints=num_datapoints)
-    q = gpx.CollapsedVariationalGaussian(posterior=p * likelihood, inducing_inputs=z)
+    likelihood = gpx.likelihoods.Gaussian(num_datapoints=num_datapoints)
+    q = gpx.variational_families.CollapsedVariationalGaussian(
+        posterior=p * likelihood, inducing_inputs=z
+    )
 
     negative_elbo = CollapsedELBO(negative=negative)
 
@@ -141,7 +178,14 @@ def test_collapsed_elbo(
     assert isinstance(evaluation, jax.Array)
     assert evaluation.shape == ()
 
-    # with pytest.raises(TypeError):
+    # Data on the full dataset should be the same as the marginal likelihood
+    q = gpx.variational_families.CollapsedVariationalGaussian(
+        posterior=p * likelihood, inducing_inputs=D.X
+    )
+    mll = ConjugateMLL(negative=negative)
+    expected_value = mll(p * likelihood, D)
+    actual_value = negative_elbo(q, D)
+    assert jnp.abs(actual_value - expected_value) / expected_value < 1e-6
 
 
 @pytest.mark.parametrize("num_datapoints", [1, 2, 10])
@@ -158,22 +202,23 @@ def test_elbo(
     key_val: int,
     binary: bool,
 ):
-    key = jr.PRNGKey(key_val)
+    key = jr.key(key_val)
     D = build_data(num_datapoints, num_dims, key, binary=binary)
     z = jr.uniform(
         key=key, minval=-2.0, maxval=2.0, shape=(num_datapoints // 2, num_dims)
     )
 
-    p = Prior(
-        kernel=gpx.RBF(active_dims=list(range(num_dims))), mean_function=gpx.Constant()
+    p = gpx.gps.Prior(
+        kernel=gpx.kernels.RBF(active_dims=list(range(num_dims))),
+        mean_function=gpx.mean_functions.Constant(),
     )
     if binary:
-        likelihood = Bernoulli(num_datapoints=num_datapoints)
+        likelihood = gpx.likelihoods.Bernoulli(num_datapoints=num_datapoints)
     else:
-        likelihood = Gaussian(num_datapoints=num_datapoints)
+        likelihood = gpx.likelihoods.Gaussian(num_datapoints=num_datapoints)
     post = p * likelihood
 
-    q = gpx.VariationalGaussian(posterior=post, inducing_inputs=z)
+    q = gpx.variational_families.VariationalGaussian(posterior=post, inducing_inputs=z)
 
     negative_elbo = ELBO(
         negative=negative,

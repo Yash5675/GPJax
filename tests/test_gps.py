@@ -14,16 +14,19 @@
 # ==============================================================================
 
 try:
-    import beartype
+    import jaxtyping
 
-    ValidationErrors = (ValueError, beartype.roar.BeartypeCallHintParamViolation)
+    ValidationErrors = (ValueError, jaxtyping.TypeCheckError)
 except ImportError:
     ValidationErrors = ValueError
 
 from dataclasses import is_dataclass
-from typing import Callable
+from typing import (
+    Callable,
+    Type,
+)
 
-from jax.config import config
+from jax import config
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
@@ -32,7 +35,7 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 
 # from gpjax.dataset import Dataset
 from gpjax.dataset import Dataset
-from gpjax.gaussian_distribution import GaussianDistribution
+from gpjax.distributions import GaussianDistribution
 from gpjax.gps import (
     AbstractPosterior,
     AbstractPrior,
@@ -78,7 +81,9 @@ def test_abstract_posterior():
 @pytest.mark.parametrize("kernel", [RBF(), Matern52()])
 @pytest.mark.parametrize("mean_function", [Zero(), Constant()])
 def test_prior(
-    num_datapoints: int, mean_function: AbstractMeanFunction, kernel: AbstractKernel
+    num_datapoints: int,
+    kernel: AbstractKernel,
+    mean_function: AbstractMeanFunction,
 ) -> None:
     # Create prior.
     prior = Prior(mean_function=mean_function, kernel=kernel)
@@ -112,10 +117,12 @@ def test_prior(
 @pytest.mark.parametrize("kernel", [RBF(), Matern52()])
 @pytest.mark.parametrize("mean_function", [Zero(), Constant()])
 def test_conjugate_posterior(
-    num_datapoints: int, mean_function: AbstractMeanFunction, kernel: AbstractKernel
+    num_datapoints: int,
+    mean_function: AbstractMeanFunction,
+    kernel: AbstractKernel,
 ) -> None:
     # Create a dataset.
-    key = jr.PRNGKey(123)
+    key = jr.key(123)
     x = jr.uniform(key=key, minval=-2.0, maxval=2.0, shape=(num_datapoints, 1))
     y = jnp.sin(x) + jr.normal(key=key, shape=x.shape) * 0.1
     D = Dataset(X=x, y=y)
@@ -157,10 +164,12 @@ def test_conjugate_posterior(
 @pytest.mark.parametrize("kernel", [RBF(), Matern52()])
 @pytest.mark.parametrize("mean_function", [Zero(), Constant()])
 def test_nonconjugate_posterior(
-    num_datapoints: int, mean_function: AbstractMeanFunction, kernel: AbstractKernel
+    num_datapoints: int,
+    mean_function: AbstractMeanFunction,
+    kernel: AbstractKernel,
 ) -> None:
     # Create a dataset.
-    key = jr.PRNGKey(123)
+    key = jr.key(123)
     x = jr.uniform(key=key, minval=-2.0, maxval=2.0, shape=(num_datapoints, 1))
     y = jnp.sin(x) + jr.normal(key=key, shape=x.shape) * 0.1
     D = Dataset(X=x, y=y)
@@ -191,7 +200,7 @@ def test_nonconjugate_posterior(
     ]
     leaves = jtu.tree_leaves(posterior)
 
-    for l1, l2 in zip(leaves, true_leaves):
+    for l1, l2 in zip(leaves, true_leaves, strict=True):
         assert (l1 == l2).all()
 
     # Query a marginal distribution of the posterior at some inputs.
@@ -214,7 +223,7 @@ def test_nonconjugate_posterior(
 @pytest.mark.parametrize("kernel", [RBF(), Matern52()])
 @pytest.mark.parametrize("mean_function", [Zero(), Constant()])
 def test_posterior_construct(
-    likelihood: AbstractLikelihood,
+    likelihood: Type[AbstractLikelihood],
     num_datapoints: int,
     mean_function: AbstractMeanFunction,
     kernel: AbstractKernel,
@@ -243,7 +252,9 @@ def test_posterior_construct(
     leaves_rmul = jtu.tree_leaves(posterior_rmul)
     leaves_manual = jtu.tree_leaves(posterior_manual)
 
-    for leaf_mul, leaf_rmul, leaf_man in zip(leaves_mul, leaves_rmul, leaves_manual):
+    for leaf_mul, leaf_rmul, leaf_man in zip(
+        leaves_mul, leaves_rmul, leaves_manual, strict=True
+    ):
         assert (leaf_mul == leaf_rmul).all()
         assert (leaf_rmul == leaf_man).all()
 
@@ -266,7 +277,7 @@ def test_posterior_construct(
 def test_prior_sample_approx(num_datapoints, kernel, mean_function):
     kern = kernel(lengthscale=jnp.array([5.0, 1.0]), variance=0.1)
     p = Prior(kernel=kern, mean_function=mean_function)
-    key = jr.PRNGKey(123)
+    key = jr.key(123)
 
     with pytest.raises(ValueError):
         p.sample_approx(-1, key)
@@ -293,7 +304,7 @@ def test_prior_sample_approx(num_datapoints, kernel, mean_function):
     max_delta = jnp.max(jnp.abs(evals - evals_2))
     assert max_delta == 0.0  # samples same for same seed
 
-    new_key = jr.PRNGKey(12345)
+    new_key = jr.key(12345)
     sampled_fn_3 = p.sample_approx(1, new_key, 100)
     evals_3 = sampled_fn_3(x)
     max_delta = jnp.max(jnp.abs(evals - evals_3))
@@ -321,7 +332,7 @@ def test_conjugate_posterior_sample_approx(num_datapoints, kernel, mean_function
     p = Prior(kernel=kern, mean_function=mean_function) * Gaussian(
         num_datapoints=num_datapoints
     )
-    key = jr.PRNGKey(123)
+    key = jr.key(123)
 
     x = jr.uniform(key=key, minval=-2.0, maxval=2.0, shape=(num_datapoints, 2))
     y = (
@@ -355,7 +366,7 @@ def test_conjugate_posterior_sample_approx(num_datapoints, kernel, mean_function
     max_delta = jnp.max(jnp.abs(evals - evals_2))
     assert max_delta == 0.0  # samples same for same seed
 
-    new_key = jr.PRNGKey(12345)
+    new_key = jr.key(12345)
     sampled_fn_3 = p.sample_approx(1, D, new_key, 100)
     evals_3 = sampled_fn_3(x)
     max_delta = jnp.max(jnp.abs(evals - evals_3))

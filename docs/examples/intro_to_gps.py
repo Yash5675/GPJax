@@ -109,7 +109,9 @@ import seaborn as sns
 import tensorflow_probability.substrates.jax as tfp
 from docs.examples.utils import confidence_ellipse
 
-plt.style.use("./gpjax.mplstyle")
+plt.style.use(
+    "https://raw.githubusercontent.com/JaxGaussianProcesses/GPJax/main/docs/examples/gpjax.mplstyle"
+)
 cols = mpl.rcParams["axes.prop_cycle"].by_key()["color"]
 tfd = tfp.distributions
 
@@ -156,7 +158,7 @@ ax.legend(loc="best")
 # determines the correlation of the multivariate Gaussian.
 
 # %%
-key = jr.PRNGKey(123)
+key = jr.key(123)
 
 d1 = tfd.MultivariateNormalDiag(loc=jnp.zeros(2), scale_diag=jnp.ones(2))
 d2 = tfd.MultivariateNormalTriL(
@@ -308,7 +310,7 @@ with warnings.catch_warnings():
     )
 
 # %% [markdown]
-# Formmally, we can define this by letting $p(\mathbf{x}, \mathbf{y})$ be the
+# Formally, we can define this by letting $p(\mathbf{x}, \mathbf{y})$ be the
 # joint probability distribution defined over
 # $\mathbf{x}\sim\mathcal{N}(\boldsymbol{\mu}_{\mathbf{x}}, \boldsymbol{\Sigma}_{\mathbf{xx}})$ and
 # $\mathbf{y}\sim\mathcal{N}(\boldsymbol{\mu}_{\mathbf{y}}, \boldsymbol{\Sigma}_{\mathbf{yy}})$.
@@ -320,7 +322,8 @@ with warnings.catch_warnings():
 #     \end{bmatrix}\right) = \mathcal{N}\left(\begin{bmatrix}
 #         \boldsymbol{\mu}_{\mathbf{x}} \\ \boldsymbol{\mu}_{\mathbf{y}}
 #     \end{bmatrix}, \begin{bmatrix}
-#         \boldsymbol{\Sigma}_{\mathbf{yx}}, \boldsymbol{\Sigma}_{\mathbf{yy}}
+#         \boldsymbol{\Sigma}_{\mathbf{xx}} & \boldsymbol{\Sigma}_{\mathbf{xy}}\\
+#         \boldsymbol{\Sigma}_{\mathbf{yx}} & \boldsymbol{\Sigma}_{\mathbf{yy}}
 #     \end{bmatrix} \right)\,,
 # \end{align}
 # $$
@@ -342,7 +345,7 @@ with warnings.catch_warnings():
 # $$
 # \begin{alignat}{3}
 #     & \int p(\mathbf{x}, \mathbf{y})\mathrm{d}\mathbf{y} && = p(\mathbf{x})
-#     && = \mathcal{N}(\boldsymbol{\mu}_{\mathbf{x}},
+#     && = \mathcal{N}(\boldsymbol{\mu}_{\mathbf{x}},\boldsymbol{\Sigma}_{\mathbf{xx}})\\
 #     & \int p(\mathbf{x}, \mathbf{y})\mathrm{d}\mathbf{x} && = p(\mathbf{y})
 #     && = \mathcal{N}(\boldsymbol{\mu}_{\mathbf{y}},
 #     \boldsymbol{\Sigma}_{\mathbf{yy}})\,.
@@ -401,7 +404,7 @@ with warnings.catch_warnings():
 # $\mathbf{K}_{ff}$ such that the $(i, j)^{\text{th}}$ entry of the matrix is
 # given by $[\mathbf{K}_{ff}]_{i, j} = k(\mathbf{x}_i, \mathbf{x}_j)$. As is
 # conventional within the literature, we centre our training data and assume
-# $\mu(\mathbf{X}):= 0$ for all $\mathbf{X}\in\mathbf{X}$. We further drop
+# $\mu(\mathbf{X}):= 0$ for all $\mathbf{X}\in\mathcal{X}$. We further drop
 # dependency on $\boldsymbol{\theta}$ and $\mathbf{X}$ for notational
 # convenience in the remainder of this article.
 #
@@ -445,8 +448,8 @@ with warnings.catch_warnings():
 # that are admissible under the GP prior. A kernel is a positive-definite
 # function with parameters $\boldsymbol{\theta}$ that maps pairs of inputs
 # $\mathbf{X}, \mathbf{X}' \in \mathcal{X}$ onto the real line. We dedicate the
-# entirety of the [Kernel Guide
-# notebook](https://docs.jaxgaussianprocesses.com/examples/kernels) to
+# entirety of the [Introduction to Kernels
+# notebook](https://docs.jaxgaussianprocesses.com/examples/intro_to_kernels) to
 # exploring the different GPs each kernel can yield.
 #
 # ## Gaussian process regression
@@ -471,7 +474,7 @@ with warnings.catch_warnings():
 # be analytically expressed as
 # $$
 # \begin{align}
-#         & = 0.5\left(-\underbrace{\mathbf{y}^{\top}\left(\mathbf{K}_{ff} - \sigma_n^2\mathbf{I}_n \right)^{-1}\mathbf{y}}_{\text{Data fit}} -\underbrace{\log\lvert \mathbf{K}_{ff} + \sigma^2_n\rvert}_{\text{Complexity}} -\underbrace{n\log 2\pi}_{\text{Constant}} \right)\,.
+#         & = 0.5\left(-\underbrace{\mathbf{y}^{\top}\left(\mathbf{K}_{ff} + \sigma_n^2\mathbf{I}_n \right)^{-1}\mathbf{y}}_{\text{Data fit}} -\underbrace{\log\lvert \mathbf{K}_{ff} + \sigma^2_n\rvert}_{\text{Complexity}} -\underbrace{n\log 2\pi}_{\text{Constant}} \right)\,.
 # \end{align}
 # $$
 #

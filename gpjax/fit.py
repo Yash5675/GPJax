@@ -19,12 +19,20 @@ from beartype.typing import (
     Callable,
     Optional,
     Tuple,
+    TypeVar,
     Union,
 )
 import jax
+from jax import (
+    jit,
+    value_and_grad,
+)
 from jax._src.random import _check_prng_key
+from jax.flatten_util import ravel_pytree
+import jax.numpy as jnp
 import jax.random as jr
 import optax as ox
+import scipy
 
 from gpjax.base import Module
 from gpjax.dataset import Dataset
@@ -36,11 +44,13 @@ from gpjax.typing import (
     ScalarFloat,
 )
 
+ModuleModel = TypeVar("ModuleModel", bound=Module)
+
 
 def fit(  # noqa: PLR0913
     *,
-    model: Module,
-    objective: Union[AbstractObjective, Callable[[Module, Dataset], ScalarFloat]],
+    model: ModuleModel,
+    objective: Union[AbstractObjective, Callable[[ModuleModel, Dataset], ScalarFloat]],
     train_data: Dataset,
     optim: ox.GradientTransformation,
     key: KeyArray,
@@ -50,7 +60,7 @@ def fit(  # noqa: PLR0913
     verbose: Optional[bool] = True,
     unroll: Optional[int] = 1,
     safe: Optional[bool] = True,
-) -> Tuple[Module, Array]:
+) -> Tuple[ModuleModel, Array]:
     r"""Train a Module model with respect to a supplied Objective function.
     Optimisers used here should originate from Optax.
 
@@ -63,13 +73,13 @@ def fit(  # noqa: PLR0913
         >>>
         >>> # (1) Create a dataset:
         >>> X = jnp.linspace(0.0, 10.0, 100)[:, None]
-        >>> y = 2.0 * X + 1.0 + 10 * jr.normal(jr.PRNGKey(0), X.shape)
+        >>> y = 2.0 * X + 1.0 + 10 * jr.normal(jr.key(0), X.shape)
         >>> D = gpx.Dataset(X, y)
         >>>
         >>> # (2) Define your model:
-        >>> class LinearModel(gpx.Module):
-                weight: float = gpx.param_field()
-                bias: float = gpx.param_field()
+        >>> class LinearModel(gpx.base.Module):
+                weight: float = gpx.base.param_field()
+                bias: float = gpx.base.param_field()
 
                 def __call__(self, x):
                     return self.weight * x + self.bias
@@ -77,7 +87,7 @@ def fit(  # noqa: PLR0913
         >>> model = LinearModel(weight=1.0, bias=1.0)
         >>>
         >>> # (3) Define your loss function:
-        >>> class MeanSquareError(gpx.AbstractObjective):
+        >>> class MeanSquareError(gpx.objectives.AbstractObjective):
                 def evaluate(self, model: LinearModel, train_data: gpx.Dataset) -> float:
                     return jnp.mean((train_data.y - model(train_data.X)) ** 2)
         >>>
@@ -101,7 +111,7 @@ def fit(  # noqa: PLR0913
         batch_size (Optional[int]): The size of the mini-batch to use. Defaults to -1
             (i.e. full batch).
         key (Optional[KeyArray]): The random key to use for the optimisation batch
-            selection. Defaults to jr.PRNGKey(42).
+            selection. Defaults to jr.key(42).
         log_rate (Optional[int]): How frequently the objective function's value should
             be printed. Defaults to 10.
         verbose (Optional[bool]): Whether to print the training loading bar. Defaults
@@ -121,7 +131,7 @@ def fit(  # noqa: PLR0913
         _check_optim(optim)
         _check_num_iters(num_iters)
         _check_batch_size(batch_size)
-        _check_prng_key(key)
+        _check_prng_key("fit", key)
         _check_log_rate(log_rate)
         _check_verbose(verbose)
 
@@ -164,6 +174,73 @@ def fit(  # noqa: PLR0913
     # Constrained space.
     model = model.constrain()
 
+    return model, history
+
+
+def fit_scipy(  # noqa: PLR0913
+    *,
+    model: ModuleModel,
+    objective: Union[AbstractObjective, Callable[[ModuleModel, Dataset], ScalarFloat]],
+    train_data: Dataset,
+    max_iters: Optional[int] = 500,
+    verbose: Optional[bool] = True,
+    safe: Optional[bool] = True,
+) -> Tuple[ModuleModel, Array]:
+    r"""Train a Module model with respect to a supplied Objective function.
+    Optimisers used here should originate from Optax. todo
+
+    Args:
+        model (Module): The model Module to be optimised.
+        objective (Objective): The objective function that we are optimising with
+            respect to.
+        train_data (Dataset): The training data to be used for the optimisation.
+        max_iters (Optional[int]): The maximum number of optimisation steps to run. Defaults
+            to 500.
+        verbose (Optional[bool]): Whether to print the information about the optimisation. Defaults
+            to True.
+
+    Returns
+    -------
+        Tuple[Module, Array]: A Tuple comprising the optimised model and training
+            history respectively.
+    """
+    if safe:
+        # Check inputs.
+        _check_model(model)
+        _check_train_data(train_data)
+        _check_num_iters(max_iters)
+        _check_verbose(verbose)
+
+    # Unconstrained space model.
+    model = model.unconstrain()
+
+    # Unconstrained space loss function with stop-gradient rule for non-trainable params.
+    def loss(model: Module) -> ScalarFloat:
+        model = model.stop_gradient()
+        return objective(model.constrain(), train_data)
+
+    # convert to numpy for interface with scipy
+    x0, scipy_to_jnp = ravel_pytree(model)
+
+    @jit
+    def scipy_wrapper(x0):
+        value, grads = value_and_grad(loss)(scipy_to_jnp(jnp.array(x0)))
+        scipy_grads = ravel_pytree(grads)[0]
+        return value, scipy_grads
+
+    history = [scipy_wrapper(x0)[0]]
+    result = scipy.optimize.minimize(
+        fun=scipy_wrapper,
+        x0=x0,
+        jac=True,
+        callback=lambda X: history.append(scipy_wrapper(X)[0]),
+        options={"maxiter": max_iters, "disp": verbose},
+    )
+    history = jnp.array(history)
+
+    # convert back to pytree and reconstrain
+    model = scipy_to_jnp(result.x)
+    model = model.constrain()
     return model, history
 
 

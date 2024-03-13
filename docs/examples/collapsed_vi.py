@@ -1,3 +1,19 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: -all
+#     custom_cell_magics: kql
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.11.2
+#   kernelspec:
+#     display_name: gpjax_beartype
+#     language: python
+#     name: python3
+# ---
+
 # %% [markdown]
 # # Sparse Gaussian Process Regression
 #
@@ -11,7 +27,7 @@
 
 # %%
 # Enable Float64 for more stable matrix inversions.
-from jax.config import config
+from jax import config
 
 config.update("jax_enable_x64", True)
 
@@ -27,8 +43,10 @@ from docs.examples.utils import clean_legend
 with install_import_hook("gpjax", "beartype.beartype"):
     import gpjax as gpx
 
-key = jr.PRNGKey(123)
-plt.style.use("./gpjax.mplstyle")
+key = jr.key(123)
+plt.style.use(
+    "https://raw.githubusercontent.com/JaxGaussianProcesses/GPJax/main/docs/examples/gpjax.mplstyle"
+)
 cols = mpl.rcParams["axes.prop_cycle"].by_key()["color"]
 
 # %% [markdown]
@@ -71,12 +89,16 @@ z = jnp.linspace(-3.0, 3.0, n_inducing).reshape(-1, 1)
 fig, ax = plt.subplots()
 ax.scatter(x, y, alpha=0.25, label="Observations", color=cols[0])
 ax.plot(xtest, ytest, label="Latent function", linewidth=2, color=cols[1])
-[
-    ax.axvline(x=z_i, alpha=0.3, linewidth=0.5, label="Inducing point", color=cols[2])
-    for z_i in z
-]
+ax.vlines(
+    x=z,
+    ymin=y.min(),
+    ymax=y.max(),
+    alpha=0.3,
+    linewidth=0.5,
+    label="Inducing point",
+    color=cols[2],
+)
 ax.legend(loc="best")
-ax = clean_legend(ax)
 plt.show()
 
 # %% [markdown]
@@ -84,10 +106,10 @@ plt.show()
 # this, it is intractable to evaluate.
 
 # %%
-meanf = gpx.Constant()
-kernel = gpx.RBF()
-likelihood = gpx.Gaussian(num_datapoints=D.n)
-prior = gpx.Prior(mean_function=meanf, kernel=kernel)
+meanf = gpx.mean_functions.Constant()
+kernel = gpx.kernels.RBF()
+likelihood = gpx.likelihoods.Gaussian(num_datapoints=D.n)
+prior = gpx.gps.Prior(mean_function=meanf, kernel=kernel)
 posterior = prior * likelihood
 
 # %% [markdown]
@@ -97,7 +119,9 @@ posterior = prior * likelihood
 # inducing points into the constructor as arguments.
 
 # %%
-q = gpx.CollapsedVariationalGaussian(posterior=posterior, inducing_inputs=z)
+q = gpx.variational_families.CollapsedVariationalGaussian(
+    posterior=posterior, inducing_inputs=z
+)
 
 # %% [markdown]
 # We define our variational inference algorithm through `CollapsedVI`. This defines
@@ -105,7 +129,22 @@ q = gpx.CollapsedVariationalGaussian(posterior=posterior, inducing_inputs=z)
 # <strong data-cite="titsias2009">Titsias (2009)</strong>.
 
 # %%
-elbo = jit(gpx.CollapsedELBO(negative=True))
+elbo = gpx.objectives.CollapsedELBO(negative=True)
+
+# %% [markdown]
+# For researchers, GPJax has the capacity to print the bibtex citation for objects such
+# as the ELBO through the `cite()` function.
+
+# %%
+print(gpx.cite(elbo))
+
+# %% [markdown]
+# JIT-compiling expensive-to-compute functions such as the ELBO is
+# advisable. This can be achieved by wrapping the function in `jax.jit()`.
+
+# %%
+
+elbo = jit(elbo)
 
 # %% [markdown]
 # We now train our model akin to a Gaussian process regression model via the `fit`
@@ -180,12 +219,17 @@ ax.plot(
     linewidth=0.5,
 )
 
-[
-    ax.axvline(x=z_i, alpha=0.3, linewidth=0.5, label="Inducing point", color=cols[2])
-    for z_i in inducing_points
-]
+
+ax.vlines(
+    x=inducing_points,
+    ymin=ytest.min(),
+    ymax=ytest.max(),
+    alpha=0.3,
+    linewidth=0.5,
+    label="Inducing point",
+    color=cols[2],
+)
 ax.legend()
-ax = clean_legend(ax)
 ax.set(xlabel=r"$x$", ylabel=r"$f(x)$")
 plt.show()
 
@@ -199,14 +243,14 @@ plt.show()
 # full model.
 
 # %%
-full_rank_model = gpx.Prior(mean_function=gpx.Zero(), kernel=gpx.RBF()) * gpx.Gaussian(
-    num_datapoints=D.n
-)
-negative_mll = jit(gpx.ConjugateMLL(negative=True))
+full_rank_model = gpx.gps.Prior(
+    mean_function=gpx.mean_functions.Zero(), kernel=gpx.kernels.RBF()
+) * gpx.likelihoods.Gaussian(num_datapoints=D.n)
+negative_mll = jit(gpx.objectives.ConjugateMLL(negative=True).step)
 # %timeit negative_mll(full_rank_model, D).block_until_ready()
 
 # %%
-negative_elbo = jit(gpx.CollapsedELBO(negative=True))
+negative_elbo = jit(gpx.objectives.CollapsedELBO(negative=True).step)
 # %timeit negative_elbo(q, D).block_until_ready()
 
 # %% [markdown]

@@ -16,8 +16,9 @@ from dataclasses import is_dataclass
 from itertools import product
 from typing import List
 
+from cola.ops import LinearOperator
 import jax
-from jax.config import config
+from jax import config
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
@@ -25,17 +26,19 @@ import pytest
 import tensorflow_probability.substrates.jax.bijectors as tfb
 
 from gpjax.kernels.base import AbstractKernel
-from gpjax.kernels.computations import DenseKernelComputation
+from gpjax.kernels.computations import (
+    AbstractKernelComputation,
+    DenseKernelComputation,
+)
 from gpjax.kernels.nonstationary import (
     ArcCosine,
     Linear,
     Polynomial,
 )
-from gpjax.linops import LinearOperator
 
 # Enable Float64 for more stable matrix inversions.
 config.update("jax_enable_x64", True)
-_initialise_key = jr.PRNGKey(123)
+_initialise_key = jr.key(123)
 _jitter = 1e-6
 
 
@@ -43,7 +46,7 @@ class BaseTestKernel:
     """A base class that contains all tests applied on non-stationary kernels."""
 
     kernel: AbstractKernel
-    default_compute_engine: type
+    default_compute_engine: AbstractKernelComputation
     static_fields: List[str]
 
     def pytest_generate_tests(self, metafunc):
@@ -144,7 +147,9 @@ class BaseTestKernel:
 
 
 def prod(inp):
-    return [dict(zip(inp.keys(), values)) for values in product(*inp.values())]
+    return [
+        dict(zip(inp.keys(), values, strict=True)) for values in product(*inp.values())
+    ]
 
 
 class TestLinear(BaseTestKernel):
@@ -152,7 +157,7 @@ class TestLinear(BaseTestKernel):
     fields = prod({"variance": [0.1, 1.0, 2.0]})
     params = {"test_initialization": fields}
     static_fields = []
-    default_compute_engine = DenseKernelComputation
+    default_compute_engine = DenseKernelComputation()
 
 
 class TestPolynomial(BaseTestKernel):
@@ -162,7 +167,7 @@ class TestPolynomial(BaseTestKernel):
     )
     static_fields = ["degree"]
     params = {"test_initialization": fields}
-    default_compute_engine = DenseKernelComputation
+    default_compute_engine = DenseKernelComputation()
 
 
 class TestArcCosine(BaseTestKernel):
@@ -177,7 +182,7 @@ class TestArcCosine(BaseTestKernel):
     )
     static_fields = ["order"]
     params = {"test_initialization": fields}
-    default_compute_engine = DenseKernelComputation
+    default_compute_engine = DenseKernelComputation()
 
     @pytest.mark.parametrize("order", [-1, 3], ids=lambda x: f"order={x}")
     def test_defaults(self, order: int) -> None:
@@ -193,7 +198,7 @@ class TestArcCosine(BaseTestKernel):
         kernel: AbstractKernel = self.kernel(
             weight_variance=jnp.array([1.0, 1.0]), bias_variance=1e-25, order=order
         )
-        key = jr.PRNGKey(123)
+        key = jr.key(123)
 
         # Inputs close(ish) together
         a = jnp.array([[0.0, 0.0]])

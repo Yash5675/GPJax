@@ -13,9 +13,8 @@ from gpjax.base import (
     static_field,
 )
 from gpjax.dataset import Dataset
-from gpjax.gaussian_distribution import GaussianDistribution
-from gpjax.linops import identity
-from gpjax.quadrature import gauss_hermite_quadrature
+from gpjax.distributions import GaussianDistribution
+from gpjax.lower_cholesky import lower_cholesky
 from gpjax.typing import (
     Array,
     ScalarFloat,
@@ -23,13 +22,30 @@ from gpjax.typing import (
 
 tfd = tfp.distributions
 
+from typing import TypeVar
+
+import cola
+
+ConjugatePosterior = TypeVar(
+    "ConjugatePosterior", bound="gpjax.gps.ConjugatePosterior"  # noqa: F821
+)
+NonConjugatePosterior = TypeVar(
+    "NonConjugatePosterior", bound="gpjax.gps.NonConjugatePosterior"  # noqa: F821
+)
+VariationalFamily = TypeVar(
+    "VariationalFamily",
+    bound="gpjax.variational_families.AbstractVariationalFamily",  # noqa: F821
+)
+
+from cola.linalg.decompositions.decompositions import Cholesky
+
 
 @dataclass
 class AbstractObjective(Module):
     r"""Abstract base class for objectives."""
 
     negative: bool = static_field(False)
-    constant: float = static_field(init=False, repr=False)
+    constant: ScalarFloat = static_field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.constant = jnp.array(-1.0) if self.negative else jnp.array(1.0)
@@ -48,8 +64,8 @@ class AbstractObjective(Module):
 class ConjugateMLL(AbstractObjective):
     def step(
         self,
-        posterior: "gpjax.gps.ConjugatePosterior",  # noqa: F821
-        train_data: Dataset,  # noqa: F821
+        posterior: ConjugatePosterior,
+        train_data: Dataset,
     ) -> ScalarFloat:
         r"""Evaluate the marginal log-likelihood of the Gaussian process.
 
@@ -84,10 +100,10 @@ class ConjugateMLL(AbstractObjective):
             >>> meanf = gpx.mean_functions.Constant()
             >>> kernel = gpx.kernels.RBF()
             >>> likelihood = gpx.likelihoods.Gaussian(num_datapoints=D.n)
-            >>> prior = gpx.Prior(mean_function = meanf, kernel=kernel)
+            >>> prior = gpx.gps.Prior(mean_function = meanf, kernel=kernel)
             >>> posterior = prior * likelihood
             >>>
-            >>> mll = gpx.ConjugateMLL(negative=True)
+            >>> mll = gpx.objectives.ConjugateMLL(negative=True)
             >>> mll(posterior, train_data = D)
         ```
 
@@ -96,13 +112,13 @@ class ConjugateMLL(AbstractObjective):
         marginal log-likelihood. This can be realised through
 
         ```python
-            mll = gpx.ConjugateMLL(negative=True)
+            mll = gpx.objectives.ConjugateMLL(negative=True)
         ```
 
         For optimal performance, the marginal log-likelihood should be ``jax.jit``
         compiled.
         ```python
-            mll = jit(gpx.ConjugateMLL(negative=True))
+            mll = jit(gpx.objectives.ConjugateMLL(negative=True))
         ```
 
         Args:
@@ -116,16 +132,17 @@ class ConjugateMLL(AbstractObjective):
             ScalarFloat: The marginal log-likelihood of the Gaussian process for the
                 current parameter set.
         """
-        x, y, n = train_data.X, train_data.y, train_data.n
+        x, y = train_data.X, train_data.y
 
         # Observation noise o²
-        obs_noise = posterior.likelihood.obs_noise
+        obs_noise = posterior.likelihood.obs_stddev**2
         mx = posterior.prior.mean_function(x)
 
         # Σ = (Kxx + Io²) = LLᵀ
         Kxx = posterior.prior.kernel.gram(x)
-        Kxx += identity(n) * posterior.prior.jitter
-        Sigma = Kxx + identity(n) * obs_noise
+        Kxx += cola.ops.I_like(Kxx) * posterior.prior.jitter
+        Sigma = Kxx + cola.ops.I_like(Kxx) * obs_noise
+        Sigma = cola.PSD(Sigma)
 
         # p(y | x, θ), where θ are the model hyperparameters:
         mll = GaussianDistribution(jnp.atleast_1d(mx.squeeze()), Sigma)
@@ -133,14 +150,100 @@ class ConjugateMLL(AbstractObjective):
         return self.constant * (mll.log_prob(jnp.atleast_1d(y.squeeze())).squeeze())
 
 
+class ConjugateLOOCV(AbstractObjective):
+    def step(
+        self,
+        posterior: ConjugatePosterior,
+        train_data: Dataset,
+    ) -> ScalarFloat:
+        r"""Evaluate the leave-one-out log predictive probability of the Gaussian process following
+        section 5.4.2 of Rasmussen et al. 2006 - Gaussian Processes for Machine Learning. This metric
+        calculates the average performance of all models that can be obtained by training on all but one
+        data point, and then predicting the left out data point.
+
+        The returned metric can then be used for gradient based optimisation
+        of the model's parameters or for model comparison. The implementation
+        given here enables exact estimation of the Gaussian process' latent
+        function values.
+
+        For a given ``ConjugatePosterior`` object, the following code snippet shows
+        how the leave-one-out log predicitive probability can be evaluated.
+
+        Example:
+        ```python
+            >>> import gpjax as gpx
+            >>>
+            >>> xtrain = jnp.linspace(0, 1).reshape(-1, 1)
+            >>> ytrain = jnp.sin(xtrain)
+            >>> D = gpx.Dataset(X=xtrain, y=ytrain)
+            >>>
+            >>> meanf = gpx.mean_functions.Constant()
+            >>> kernel = gpx.kernels.RBF()
+            >>> likelihood = gpx.likelihoods.Gaussian(num_datapoints=D.n)
+            >>> prior = gpx.gps.Prior(mean_function = meanf, kernel=kernel)
+            >>> posterior = prior * likelihood
+            >>>
+            >>> loocv = gpx.objectives.ConjugateLOOCV(negative=True)
+            >>> loocv(posterior, train_data = D)
+        ```
+
+        Our goal is to maximise the leave-one-out log predictive probability. Therefore, when
+        optimising the model's parameters with respect to the parameters, we use the negative
+        leave-one-out log predictive probability. This can be realised through
+
+        ```python
+            mll = gpx.objectives.ConjugateLOOCV(negative=True)
+        ```
+
+        For optimal performance, the objective should be ``jax.jit``
+        compiled.
+        ```python
+            mll = jit(gpx.objectives.ConjugateLOOCV(negative=True))
+        ```
+
+        Args:
+            posterior (ConjugatePosterior): The posterior distribution for which
+                we want to compute the leave-one-out log predictive probability.
+            train_data (Dataset): The training dataset used to compute the
+                leave-one-out log predictive probability..
+
+        Returns
+        -------
+            ScalarFloat: The leave-one-out log predictive probability of the Gaussian
+                process for the current parameter set.
+        """
+        x, y = train_data.X, train_data.y
+        y.shape[1]
+
+        # Observation noise o²
+        obs_var = posterior.likelihood.obs_stddev**2
+
+        mx = posterior.prior.mean_function(x)  # [N, M]
+
+        # Σ = (Kxx + Io²)
+        Kxx = posterior.prior.kernel.gram(x)
+        Sigma = Kxx + cola.ops.I_like(Kxx) * (obs_var + posterior.prior.jitter)
+        Sigma = cola.PSD(Sigma)  # [N, N]
+
+        Sigma_inv_y = cola.solve(Sigma, y - mx, Cholesky())  # [N, 1]
+        Sigma_inv_diag = cola.linalg.diag(cola.inv(Sigma, Cholesky()))[
+            :, None
+        ]  # [N, 1]
+
+        loocv_means = mx + (y - mx) - Sigma_inv_y / Sigma_inv_diag
+        loocv_stds = jnp.sqrt(1.0 / Sigma_inv_diag)
+
+        loocv_posterior = tfd.Normal(loc=loocv_means, scale=loocv_stds)
+        loocv = jnp.sum(loocv_posterior.log_prob(y))
+        return self.constant * loocv
+
+
 class LogPosteriorDensity(AbstractObjective):
     r"""The log-posterior density of a non-conjugate Gaussian process. This is
     sometimes referred to as the marginal log-likelihood.
     """
 
-    def step(
-        self, posterior: "gpjax.gps.NonConjugatePosterior", data: Dataset  # noqa: F821
-    ) -> ScalarFloat:
+    def step(self, posterior: NonConjugatePosterior, data: Dataset) -> ScalarFloat:
         r"""Evaluate the log-posterior density of a Gaussian process.
 
         Compute the marginal log-likelihood, or log-posterior density of the Gaussian
@@ -168,10 +271,11 @@ class LogPosteriorDensity(AbstractObjective):
                 current parameter set.
         """
         # Unpack the training data
-        x, y, n = data.X, data.y, data.n
+        x, y = data.X, data.y
         Kxx = posterior.prior.kernel.gram(x)
-        Kxx += identity(n) * posterior.prior.jitter
-        Lx = Kxx.to_root()
+        Kxx += cola.ops.I_like(Kxx) * posterior.prior.jitter
+        Kxx = cola.PSD(Kxx)
+        Lx = lower_cholesky(Kxx)
 
         # Compute the prior mean function
         mx = posterior.prior.mean_function(x)
@@ -199,7 +303,7 @@ NonConjugateMLL = LogPosteriorDensity
 class ELBO(AbstractObjective):
     def step(
         self,
-        variational_family: "gpjax.variational_families.AbstractVariationalFamily",  # noqa: F821
+        variational_family: VariationalFamily,
         train_data: Dataset,
     ) -> ScalarFloat:
         r"""Compute the evidence lower bound of a variational approximation.
@@ -238,7 +342,7 @@ class ELBO(AbstractObjective):
 
 
 def variational_expectation(
-    variational_family: "gpjax.variational_families.AbstractVariationalFamily",  # noqa: F821
+    variational_family: VariationalFamily,
     train_data: Dataset,
 ) -> Float[Array, " N"]:
     r"""Compute the variational expectation.
@@ -263,21 +367,24 @@ def variational_expectation(
     # Variational distribution q(f(·)) = N(f(·); μ(·), Σ(·, ·))
     q = variational_family
 
-    # Compute variational mean, μ(x), and variance, √diag(Σ(x, x)), at the training
+    # TODO: This needs cleaning up! We are squeezing then broadcasting `mean` and `variance`, which is not ideal.
+
+    # Compute variational mean, μ(x), and variance, diag(Σ(x, x)), at the training
     # inputs, x
     def q_moments(x):
         qx = q(x)
-        return qx.mean(), qx.variance()
+        return qx.mean().squeeze(), qx.covariance().squeeze()
 
     mean, variance = vmap(q_moments)(x[:, None])
 
-    link_function = variational_family.posterior.likelihood.link_function
-    log_prob = vmap(lambda f, y: link_function(f).log_prob(y))
-
     # ≈ ∫[log(p(y|f(x))) q(f(x))] df(x)
-    expectation = gauss_hermite_quadrature(log_prob, mean, jnp.sqrt(variance), y=y)
-
+    expectation = q.posterior.likelihood.expected_log_likelihood(
+        y, mean[:, None], variance[:, None]
+    )
     return expectation
+
+
+# TODO: Replace code within CollapsedELBO to using (low rank structure of) LinOps and the GaussianDistribution object to be as succinct as e.g., the `ConjugateMLL`.
 
 
 class CollapsedELBO(AbstractObjective):
@@ -290,7 +397,7 @@ class CollapsedELBO(AbstractObjective):
 
     def step(
         self,
-        variational_family: "gpjax.variational_families.AbstractVariationalFamily",  # noqa: F821
+        variational_family: VariationalFamily,
         train_data: Dataset,
     ) -> ScalarFloat:
         r"""Compute a single step of the collapsed evidence lower bound.
@@ -322,15 +429,16 @@ class CollapsedELBO(AbstractObjective):
 
         m = variational_family.num_inducing
 
-        noise = variational_family.posterior.likelihood.obs_noise
+        noise = variational_family.posterior.likelihood.obs_stddev**2
         z = variational_family.inducing_inputs
         Kzz = kernel.gram(z)
-        Kzz += identity(m) * variational_family.jitter
+        Kzz += cola.ops.I_like(Kzz) * variational_family.jitter
+        Kzz = cola.PSD(Kzz)
         Kzx = kernel.cross_covariance(z, x)
         Kxx_diag = vmap(kernel, in_axes=(0, 0))(x, x)
         μx = mean_function(x)
 
-        Lz = Kzz.to_root()
+        Lz = lower_cholesky(Kzz)
 
         # Notation and derivation:
         #
@@ -358,7 +466,7 @@ class CollapsedELBO(AbstractObjective):
         #
         #   with A and B defined as above.
 
-        A = Lz.solve(Kzx) / jnp.sqrt(noise)
+        A = cola.solve(Lz, Kzx, Cholesky()) / jnp.sqrt(noise)
 
         # AAᵀ
         AAT = jnp.matmul(A, A.T)

@@ -20,7 +20,7 @@ from typing import (
     List,
 )
 
-from jax.config import config
+from jax import config
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
@@ -43,7 +43,7 @@ from gpjax.likelihoods import (
 
 # Enable Float64 for more stable matrix inversions.
 config.update("jax_enable_x64", True)
-_initialise_key = jr.PRNGKey(123)
+_initialise_key = jr.key(123)
 
 
 class BaseTestLikelihood:
@@ -98,7 +98,7 @@ class BaseTestLikelihood:
 
         for field in meta:
             # Bijectors
-            if field in ["obs_noise"]:
+            if field in ["obs_stddev"]:
                 assert isinstance(meta[field]["bijector"], tfb.Softplus)
 
             # Trainability state
@@ -141,12 +141,14 @@ class BaseTestLikelihood:
 
 
 def prod(inp):
-    return [dict(zip(inp.keys(), values)) for values in product(*inp.values())]
+    return [
+        dict(zip(inp.keys(), values, strict=True)) for values in product(*inp.values())
+    ]
 
 
 class TestGaussian(BaseTestLikelihood):
     likelihood = Gaussian
-    fields = prod({"obs_noise": [0.1, 0.5, 1.0]})
+    fields = prod({"obs_stddev": [0.1, 0.5, 1.0]})
     params = {"test_initialisation": fields, "test_call": fields}
     static_fields = ["num_datapoints"]
 
@@ -160,7 +162,7 @@ class TestGaussian(BaseTestLikelihood):
 
         # Check predictive mean and variance.
         assert (pred_dist.mean() == latent_mean).all()
-        noise_matrix = jnp.eye(likelihood.num_datapoints) * likelihood.obs_noise
+        noise_matrix = jnp.eye(likelihood.num_datapoints) * likelihood.obs_stddev**2
         assert np.allclose(
             pred_dist.scale_tril, jnp.linalg.cholesky(latent_cov + noise_matrix)
         )

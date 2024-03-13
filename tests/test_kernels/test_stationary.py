@@ -17,8 +17,9 @@
 from dataclasses import is_dataclass
 from itertools import product
 
+from cola.ops import LinearOperator
 import jax
-from jax.config import config
+from jax import config
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import pytest
@@ -27,6 +28,7 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 
 from gpjax.kernels.base import AbstractKernel
 from gpjax.kernels.computations import (
+    AbstractKernelComputation,
     ConstantDiagonalKernelComputation,
     DenseKernelComputation,
 )
@@ -41,7 +43,6 @@ from gpjax.kernels.stationary import (
     White,
 )
 from gpjax.kernels.stationary.utils import build_student_t_distribution
-from gpjax.linops import LinearOperator
 
 # Enable Float64 for more stable matrix inversions.
 config.update("jax_enable_x64", True)
@@ -51,7 +52,7 @@ class BaseTestKernel:
     """A base class that contains all tests applied on stationary kernels."""
 
     kernel: AbstractKernel
-    default_compute_engine = type
+    default_compute_engine = AbstractKernelComputation
     spectral_density_name: str
 
     def pytest_generate_tests(self, metafunc):
@@ -108,7 +109,7 @@ class BaseTestKernel:
             if field in ["variance", "lengthscale", "period", "alpha"]:
                 assert isinstance(meta[field]["bijector"], tfb.Softplus)
             if field in ["power"]:
-                assert isinstance(meta[field]["bijector"], tfb.Identity)
+                assert isinstance(meta[field]["bijector"], tfb.Sigmoid)
 
             # Trainability state
             assert meta[field]["trainable"] is True
@@ -171,14 +172,16 @@ class BaseTestKernel:
 
 
 def prod(inp):
-    return [dict(zip(inp.keys(), values)) for values in product(*inp.values())]
+    return [
+        dict(zip(inp.keys(), values, strict=True)) for values in product(*inp.values())
+    ]
 
 
 class TestRBF(BaseTestKernel):
     kernel = RBF
     fields = prod({"lengthscale": [0.1, 1.0], "variance": [0.1, 1.0]})
     params = {"test_initialization": fields}
-    default_compute_engine = DenseKernelComputation
+    default_compute_engine = DenseKernelComputation()
     spectral_density_name = "Normal"
 
 
@@ -186,7 +189,7 @@ class TestMatern12(BaseTestKernel):
     kernel = Matern12
     fields = prod({"lengthscale": [0.1, 1.0], "variance": [0.1, 1.0]})
     params = {"test_initialization": fields}
-    default_compute_engine = DenseKernelComputation
+    default_compute_engine = DenseKernelComputation()
     spectral_density_name = "StudentT"
 
 
@@ -194,7 +197,7 @@ class TestMatern32(BaseTestKernel):
     kernel = Matern32
     fields = prod({"lengthscale": [0.1, 1.0], "variance": [0.1, 1.0]})
     params = {"test_initialization": fields}
-    default_compute_engine = DenseKernelComputation
+    default_compute_engine = DenseKernelComputation()
     spectral_density_name = "StudentT"
 
 
@@ -202,7 +205,7 @@ class TestMatern52(BaseTestKernel):
     kernel = Matern52
     fields = prod({"lengthscale": [0.1, 1.0], "variance": [0.1, 1.0]})
     params = {"test_initialization": fields}
-    default_compute_engine = DenseKernelComputation
+    default_compute_engine = DenseKernelComputation()
     spectral_density_name = "StudentT"
 
 
@@ -210,7 +213,7 @@ class TestWhite(BaseTestKernel):
     kernel = White
     fields = prod({"variance": [0.1, 1.0]})
     params = {"test_initialization": fields}
-    default_compute_engine = ConstantDiagonalKernelComputation
+    default_compute_engine = ConstantDiagonalKernelComputation()
 
 
 class TestPeriodic(BaseTestKernel):
@@ -219,16 +222,16 @@ class TestPeriodic(BaseTestKernel):
         {"lengthscale": [0.1, 1.0], "variance": [0.1, 1.0], "period": [0.1, 1.0]}
     )
     params = {"test_initialization": fields}
-    default_compute_engine = DenseKernelComputation
+    default_compute_engine = DenseKernelComputation()
 
 
 class TestPoweredExponential(BaseTestKernel):
     kernel = PoweredExponential
     fields = prod(
-        {"lengthscale": [0.1, 1.0], "variance": [0.1, 1.0], "power": [0.1, 2.0]}
+        {"lengthscale": [0.1, 1.0], "variance": [0.1, 1.0], "power": [0.1, 0.9]}
     )
     params = {"test_initialization": fields}
-    default_compute_engine = DenseKernelComputation
+    default_compute_engine = DenseKernelComputation()
 
 
 class TestRationalQuadratic(BaseTestKernel):
@@ -237,7 +240,7 @@ class TestRationalQuadratic(BaseTestKernel):
         {"lengthscale": [0.1, 1.0], "variance": [0.1, 1.0], "alpha": [0.1, 1.0]}
     )
     params = {"test_initialization": fields}
-    default_compute_engine = DenseKernelComputation
+    default_compute_engine = DenseKernelComputation()
 
 
 @pytest.mark.parametrize("smoothness", [1, 2, 3])

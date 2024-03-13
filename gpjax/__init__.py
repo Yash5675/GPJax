@@ -12,111 +12,48 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+from gpjax import (
+    base,
+    decision_making,
+    gps,
+    integrators,
+    kernels,
+    likelihoods,
+    mean_functions,
+    objectives,
+    variational_families,
+)
 from gpjax.base import (
     Module,
     param_field,
 )
+from gpjax.citation import cite
 from gpjax.dataset import Dataset
-from gpjax.fit import fit
-from gpjax.gps import (
-    Prior,
-    construct_posterior,
-)
-from gpjax.kernels import (
-    RBF,
-    RFF,
-    AbstractKernel,
-    BasisFunctionComputation,
-    ConstantDiagonalKernelComputation,
-    DenseKernelComputation,
-    DiagonalKernelComputation,
-    EigenKernelComputation,
-    GraphKernel,
-    Linear,
-    Matern12,
-    Matern32,
-    Matern52,
-    Periodic,
-    Polynomial,
-    PoweredExponential,
-    ProductKernel,
-    RationalQuadratic,
-    SumKernel,
-    White,
-)
-from gpjax.likelihoods import (
-    Bernoulli,
-    Gaussian,
-    Poisson,
-)
-from gpjax.mean_functions import (
-    Constant,
-    Zero,
-)
-from gpjax.objectives import (
-    ELBO,
-    CollapsedELBO,
-    ConjugateMLL,
-    LogPosteriorDensity,
-    NonConjugateMLL,
-)
-from gpjax.variational_families import (
-    CollapsedVariationalGaussian,
-    ExpectationVariationalGaussian,
-    NaturalVariationalGaussian,
-    VariationalGaussian,
-    WhitenedVariationalGaussian,
+from gpjax.fit import (
+    fit,
+    fit_scipy,
 )
 
 __license__ = "MIT"
 __description__ = "Didactic Gaussian processes in JAX"
-__url__ = "https://github.com/thomaspinder/GPJax"
-__contributors__ = "https://github.com/thomaspinder/GPJax/graphs/contributors"
-
+__url__ = "https://github.com/JaxGaussianProcesses/GPJax"
+__contributors__ = "https://github.com/JaxGaussianProcesses/GPJax/graphs/contributors"
+__version__ = "0.8.1"
 
 __all__ = [
+    "base",
+    "decision_making",
+    "gps",
+    "integrators",
+    "kernels",
+    "likelihoods",
+    "mean_functions",
+    "objectives",
+    "variational_families",
+    "Dataset",
+    "cite",
+    "fit",
     "Module",
     "param_field",
-    "kernels",
-    "fit",
-    "Prior",
-    "construct_posterior",
-    "RBF",
-    "GraphKernel",
-    "Matern12",
-    "Matern32",
-    "Matern52",
-    "Polynomial",
-    "ProductKernel",
-    "SumKernel",
-    "Bernoulli",
-    "Gaussian",
-    "Poisson",
-    "Constant",
-    "Zero",
-    "Dataset",
-    "CollapsedVariationalGaussian",
-    "ExpectationVariationalGaussian",
-    "NaturalVariationalGaussian",
-    "VariationalGaussian",
-    "WhitenedVariationalGaussian",
-    "CollapsedVI",
-    "StochasticVI",
-    "ConjugateMLL",
-    "NonConjugateMLL",
-    "LogPosteriorDensity",
-    "CollapsedELBO",
-    "ELBO",
-    "AbstractKernel",
-    "Linear",
-    "DenseKernelComputation",
-    "DiagonalKernelComputation",
-    "ConstantDiagonalKernelComputation",
-    "EigenKernelComputation",
-    "PoweredExponential",
-    "Periodic",
-    "RationalQuadratic",
-    "White",
-    "BasisFunctionComputation",
-    "RFF",
+    "fit_scipy",
 ]
